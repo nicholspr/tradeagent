@@ -16,6 +16,7 @@ SPARK_DAYS = 30
 
 _lock = threading.Lock()
 _cache: dict = {}
+_snap: dict = {}
 _updated: float | None = None      # when quotes were last read from eToro
 
 
@@ -93,6 +94,8 @@ def invalidate(open_only: bool = False) -> None:
             if open_only and k[0] == "quote" and _settled(k[1], _cache[k]):
                 continue
             del _cache[k]
+        if not open_only:
+            _snap.clear()
 
 
 def _cached(key, ttl, fn):
@@ -219,6 +222,39 @@ def market_info(ec, symbols: list[str], now: datetime | None = None) -> dict[str
 def market_states(ec, symbols: list[str], now: datetime | None = None) -> dict[str, bool | None]:
     """symbol -> True open / False closed / None unknown."""
     return {s: v["open"] for s, v in market_info(ec, symbols, now).items()}
+
+
+# Measured against eToro: BTC's bid/ask moves every few seconds while its market is open, and the rate
+# timestamp is just the request time. So eToro is effectively live; these TTLs are what we choose.
+PORTFOLIO_OPEN_SECONDS = 60          # at least one holding's market is open
+PORTFOLIO_CLOSED_SECONDS = 900       # everything held is closed: nothing moves, only cash/trades can change
+
+
+def snapshot_ttl(any_open: bool) -> int:
+    return PORTFOLIO_OPEN_SECONDS if any_open else PORTFOLIO_CLOSED_SECONDS
+
+
+def portfolio_snapshot(ec, now: float | None = None) -> dict:
+    """Cached {book, sparks, info, fetched, any_open}. Re-read from eToro when older than the TTL for its state."""
+    now = time.time() if now is None else now
+    with _lock:
+        snap = _snap.get("v")
+    if snap and now - snap["fetched"] < snapshot_ttl(snap["any_open"]):
+        return snap
+    book = ec.book()
+    live = [h for h in book.holdings.values() if h.units > 0]
+    info = market_info(ec, [h.symbol for h in live], datetime.fromtimestamp(now, timezone.utc))
+    snap = {"book": book, "info": info, "fetched": now,
+            "sparks": holding_sparks(ec, [h.instrument_id for h in live]),
+            "any_open": any(v["open"] is not False for v in info.values()) if info else False}
+    with _lock:
+        _snap["v"] = snap
+    return snap
+
+
+def invalidate_portfolio() -> None:
+    with _lock:
+        _snap.clear()
 
 
 def watchlist_rows(ec, symbols: list[str]) -> list[dict]:

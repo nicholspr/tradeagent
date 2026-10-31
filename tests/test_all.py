@@ -268,11 +268,11 @@ def test_dashboard_autorefresh_while_running(eng, monkeypatch):
     importlib.reload(web)
     monkeypatch.setattr(web.sched, "start", lambda: None)
     with TestClient(web.app) as c:
-        assert "http-equiv=refresh content=900" in c.get("/").text       # idle: the 15-minute watchlist refresh
+        assert "content=30" not in c.get("/").text and "http-equiv=refresh" in c.get("/").text    # idle: slower portfolio/watchlist reload
         rid = store.start_run("BTC")
         assert "http-equiv=refresh content=30" in c.get("/").text
         store.finish_run(rid, "Hold", "x")
-        assert "http-equiv=refresh content=900" in c.get("/").text
+        assert "content=30" not in c.get("/").text and "http-equiv=refresh" in c.get("/").text    # idle: slower portfolio/watchlist reload
 
 
 def test_status_strip_shows_state(eng, monkeypatch):
@@ -337,7 +337,7 @@ def test_run_progress_and_report(eng, monkeypatch):
         # a run left unfinished by a restart hours ago is not shown as live work
         with store.connect() as conn:
             conn.execute("UPDATE runs SET started=? WHERE id=?", ((datetime.now(timezone.utc) - timedelta(hours=5)).isoformat(), rid))
-        assert "http-equiv=refresh content=900" in c.get("/").text
+        assert "content=30" not in c.get("/").text and "http-equiv=refresh" in c.get("/").text    # idle: slower portfolio/watchlist reload
         out = engine.analyse(policy.WatchItem("META", "META"))
         run_id = store.proposals("pending")[0]["run_id"]
         page = c.get(f"/run/{run_id}").text
@@ -734,6 +734,71 @@ def test_portfolio_shows_price_and_sparkline(eng, monkeypatch):
     assert "#22c55e" in html                                      # AAA trended up
     assert "n/a" in html
     assert "<svg" not in web.portfolio_card(book, web.store.get_settings())   # still renders without history
+
+
+def test_portfolio_refresh_follows_market_state(eng, monkeypatch):
+    engine, store, sent, fs, rating = eng
+    from fastapi.testclient import TestClient
+    from app import web, markets
+    from app.etoro import Book, Holding
+    importlib.reload(markets)
+    importlib.reload(web)
+    monkeypatch.setattr(web.sched, "start", lambda: None)
+    sat = datetime(2026, 10, 31, 15, 0, tzinfo=timezone.utc).timestamp()   # US shut, crypto open
+    monkeypatch.setattr(markets.time, "time", lambda: sat)
+    calls = {"book": 0}
+    held = {"sym": "BTC"}
+
+    class EC:
+        def book(self):
+            calls["book"] += 1
+            return Book(cash_usd=10.0, total_usd=110.0, holdings={
+                1: Holding(1, held["sym"], units=1, value_usd=100.0, positions=[{"units": 1, "openRate": 90.0, "conv": 1.0}])})
+        def search_item(self, sym):
+            return {"internalInstrumentId": 1, "internalInstrumentDisplayName": sym,
+                    "internalAssetClassName": "Cryptocurrencies" if sym == "BTC" else "Stocks"}
+        def daily_candles(self, iid, count=365):
+            return []
+
+    ec = EC()
+    s1 = markets.portfolio_snapshot(ec, now=sat)
+    assert s1["any_open"] is True and markets.snapshot_ttl(True) == 60
+    markets.portfolio_snapshot(ec, now=sat + 59)
+    assert calls["book"] == 1                                       # open market: cached for under a minute
+    markets.portfolio_snapshot(ec, now=sat + 61)
+    assert calls["book"] == 2                                       # then re-read
+
+    markets.invalidate_portfolio()
+    held["sym"] = "META"
+    markets._cache.clear()
+    s2 = markets.portfolio_snapshot(ec, now=sat)
+    assert s2["any_open"] is False and markets.snapshot_ttl(False) == 900
+    n = calls["book"]
+    markets.portfolio_snapshot(ec, now=sat + 600)
+    assert calls["book"] == n                                       # everything closed: left alone for 15 minutes
+    markets.portfolio_snapshot(ec, now=sat + 901)
+    assert calls["book"] == n + 1
+
+    # page: reload interval and the Last refreshed column follow the state
+    monkeypatch.setattr(web.engine, "client", lambda: ec)
+    markets.invalidate_portfolio()
+    held["sym"] = "BTC"
+    markets._cache.clear()
+    with TestClient(web.app) as c:
+        page = c.get("/").text
+        assert "http-equiv=refresh content=60" in page
+        assert "<th>Last refreshed</th>" in page and "every 60 seconds while a market you hold is open" in page
+        assert datetime.fromtimestamp(sat, web.config_tz()).strftime("%H:%M:%S") in page
+        n = calls["book"]
+        c.get("/")
+        assert calls["book"] == n                                   # second load inside the minute uses the snapshot
+        c.post("/kill", data={"value": "off"})                      # any action drops the snapshot
+        c.get("/")
+        assert calls["book"] == n + 1
+        markets.invalidate_portfolio()
+        held["sym"] = "META"
+        markets._cache.clear()
+        assert "http-equiv=refresh content=900" in c.get("/").text
 
 
 def test_settings_sections_and_inline_validation(eng, monkeypatch):
