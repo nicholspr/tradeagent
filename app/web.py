@@ -276,5 +276,7 @@ def act(pid: int, token: str, action: str):
     msg = {"executed": "Order placed.", "queued": "Approved — will be placed when the market opens.",
            "rejected": "Rejected.", "status": "Rejected."}
     text = next((v for k, v in msg.items() if k in res), esc(str(res)))
+    if config.DRY_RUN and "executed" in res:
+        text = "Test mode: this would have been placed. Nothing was sent to eToro."
     return page("Done", f"<h1>{esc(engine._describe(p))}</h1><div class=card><p>{text}</p>"
                 f"<p class=muted>Status: {p['status']} {esc(p['error'] or '')}</p></div>")

@@ -212,9 +212,16 @@ def execute(pid: int) -> dict:
                               order_ref=",".join(refs), error=None)
         desc = _describe({**p, "amount_usd": sized.amount_usd})
         env = "DEMO" if ec.demo else "REAL"
-        store.log("info", f"executed proposal {pid}: {desc} [{env}] orders {refs}")
-        notify.both(f"Executed: {desc}", f"TradeAgent [{env}] placed: {desc}. Order {','.join(refs)}",
-                    f"Placed {desc} on your {env} eToro account.\nOrder refs: {refs}\nRating: {p['rating']}")
+        if config.DRY_RUN:
+            store.log("info", f"TEST ONLY proposal {pid}: {desc} [{env}] - dry run, nothing sent to eToro")
+            notify.both(f"TEST (not sent): {desc}",
+                        f"TradeAgent TEST MODE: would have placed {desc} on your {env} account. Nothing was sent to eToro.",
+                        f"Test mode (DRY_RUN=true): {desc} passed every check and would have been placed on your "
+                        f"{env} eToro account.\nNothing was sent to eToro.\nRating: {p['rating']}")
+        else:
+            store.log("info", f"executed proposal {pid}: {desc} [{env}] orders {refs}")
+            notify.both(f"Executed: {desc}", f"TradeAgent [{env}] placed: {desc}. Order {','.join(refs)}",
+                        f"Placed {desc} on your {env} eToro account.\nOrder refs: {refs}\nRating: {p['rating']}")
         return {"executed": True, "orders": refs}
 
 
