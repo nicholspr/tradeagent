@@ -688,6 +688,32 @@ def test_market_sessions_and_closed_markets_not_refetched(eng, monkeypatch):
     assert reads["n"] == n + 2
 
 
+def test_portfolio_shows_price_and_sparkline(eng, monkeypatch):
+    engine, store, sent, fs, rating = eng
+    from app import web, markets
+    from app.etoro import Book, Holding
+    importlib.reload(markets)
+    importlib.reload(web)
+    book = Book(cash_usd=100.0, total_usd=1100.0, holdings={
+        1: Holding(1, "AAA", units=10, value_usd=500.0), 2: Holding(2, "BBB", units=4, value_usd=500.0)})
+
+    class EC:
+        def daily_candles(self, iid, count=365):
+            if iid == 2:
+                raise RuntimeError("down")
+            return [{"date": "d", "open": 1, "high": 60, "low": 40, "close": c} for c in (40, 45, 60)]
+
+    sparks = markets.holding_sparks(EC(), [1, 2])
+    assert sparks[1] == [40, 45, 60] and sparks[2] == []
+    html = web.portfolio_card(book, web.store.get_settings(), sparks)
+    assert "<th>Price</th>" in html and "<th>30 days</th>" in html
+    assert "$50.00" in html and "$125.00" in html                 # 500/10 and 500/4 per unit
+    assert html.count("<svg class=spark") == 1                    # AAA only; BBB shows n/a
+    assert "#22c55e" in html                                      # AAA trended up
+    assert "n/a" in html
+    assert "<svg" not in web.portfolio_card(book, web.store.get_settings())   # still renders without history
+
+
 def test_settings_sections_and_inline_validation(eng, monkeypatch):
     engine, store, sent, fs, rating = eng
     from fastapi.testclient import TestClient

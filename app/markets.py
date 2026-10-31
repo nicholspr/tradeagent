@@ -167,6 +167,20 @@ def _fetch_one(ec, symbol: str):
     return iid, item, candles
 
 
+def holding_sparks(ec, instrument_ids: list[int]) -> dict[int, list[float]]:
+    """30-day closes per instrument for the portfolio card. A failure just means no sparkline for that holding."""
+    def one(iid):
+        try:
+            candles = _cached(("candles", iid), HISTORY_TTL, lambda: ec.daily_candles(iid, 365))
+            return iid, [c["close"] for c in candles[-SPARK_DAYS:]]
+        except Exception:  # noqa: BLE001
+            return iid, []
+    if not instrument_ids:
+        return {}
+    with ThreadPoolExecutor(max_workers=min(6, len(instrument_ids))) as pool:
+        return dict(pool.map(one, instrument_ids))
+
+
 def watchlist_rows(ec, symbols: list[str]) -> list[dict]:
     """One row per symbol. A symbol that fails shows an error row instead of breaking the page."""
     def one(sym):

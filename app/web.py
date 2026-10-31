@@ -352,9 +352,10 @@ def markets_card(s: dict) -> str:
               "Sentiment is the share of eToro investors holding long or short. Display only.</p>")
 
 
-def portfolio_card(book, s: dict) -> str:
+def portfolio_card(book, s: dict, sparks: dict | None = None) -> str:
     cap = float(s.get("max_position_pct") or 0)
     total = book.total_usd or 0
+    sparks = sparks or {}
     holdings = sorted(book.holdings.values(), key=lambda h: -h.value_usd)
     rows, warns = "", []
     for h in holdings:
@@ -363,11 +364,18 @@ def portfolio_card(book, s: dict) -> str:
         if state != "ok":
             warns.append((h.symbol, share, state))
         flag = {"over": " <span class='pill on'>over cap</span>", "near": " <span class='pill warn'>near cap</span>"}.get(state, "")
-        rows += (f"<tr><td><b>{esc(h.symbol)}</b>{flag}</td><td>${h.value_usd:,.2f}</td>"
+        price = h.value_usd / h.units if h.units > 0 else None
+        pts = list(sparks.get(h.instrument_id) or [])
+        if pts and price:
+            pts.append(price)              # end the line on the live price
+        trend = sparkline(pts, pts[-1] >= pts[0]) if len(pts) >= 2 else "<span class=muted>n/a</span>"
+        rows += (f"<tr><td><b>{esc(h.symbol)}</b>{flag}</td>"
+                 f"<td>{('$' + fmt_price(price)) if price else ''}</td><td class=sparkcell>{trend}</td>"
+                 f"<td>${h.value_usd:,.2f}</td>"
                  f"<td class=barcell>{alloc_bar(share, cap)}<span class=muted>{share:.0f}%</span></td>"
                  f"<td>{h.units:.6g}</td><td>{'$%.2f' % h.pending_usd if h.pending_usd else ''}</td></tr>")
     cash_share = book.cash_usd / total * 100 if total else 0
-    rows += (f"<tr><td><span class=muted>Cash</span></td><td>${book.cash_usd:,.2f}</td>"
+    rows += (f"<tr><td><span class=muted>Cash</span></td><td></td><td></td><td>${book.cash_usd:,.2f}</td>"
              f"<td class=barcell>{alloc_bar(cash_share, 0)}<span class=muted>{cash_share:.0f}%</span></td><td></td><td></td></tr>")
     note = ""
     if warns:
@@ -379,7 +387,7 @@ def portfolio_card(book, s: dict) -> str:
     return (f"<div class=stat><div><div class=muted>Total</div><div class=big>${book.total_usd:,.2f}</div></div>"
             f"<div><div class=muted>Cash</div><div class=big>${book.cash_usd:,.2f}</div></div>"
             f"<div><div class=muted>Holdings</div><div class=big>{sum(1 for h in holdings if h.units > 0)}</div></div></div>"
-            + table(rows, "<tr><th>Holding</th><th>Value</th><th>Share of portfolio</th><th>Units</th><th>Pending buys</th></tr>") + note)
+            + table(rows, "<tr><th>Holding</th><th>Price</th><th>30 days</th><th>Value</th><th>Share of portfolio</th><th>Units</th><th>Pending buys</th></tr>") + note)
 
 
 @app.get("/health")
@@ -405,8 +413,10 @@ def control_card(s: dict) -> str:
 def dashboard():
     s = store.get_settings()
     try:
-        book = engine.client().book()
-        port = portfolio_card(book, s)
+        ec = engine.client()
+        book = ec.book()
+        sparks = markets.holding_sparks(ec, [h.instrument_id for h in book.holdings.values() if h.units > 0])
+        port = portfolio_card(book, s, sparks)
     except Exception as e:  # noqa: BLE001
         port = f"<p class=muted>Portfolio unavailable: {esc(str(e))}</p>"
 
