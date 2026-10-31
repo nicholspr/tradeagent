@@ -33,7 +33,17 @@ class Holding:
     units: float = 0.0
     value_usd: float = 0.0
     pending_usd: float = 0.0           # queued (not yet filled) buy orders
-    positions: list = field(default_factory=list)   # [{positionID, units, value_usd, openRate}]
+    positions: list = field(default_factory=list)   # [{positionID, units, value_usd, openRate, conv}]
+
+    @property
+    def cost_usd(self) -> float | None:
+        """What the open positions cost, in USD (openRate converted at the current rate). None if unknown."""
+        total = 0.0
+        for p in self.positions:
+            if not p.get("openRate"):
+                return None
+            total += float(p["units"]) * float(p["openRate"]) * float(p.get("conv") or 1)
+        return total or None
 
 
 @dataclass
@@ -180,7 +190,8 @@ class EtoroClient:
             h.units += float(x["units"])
             h.value_usd += val
             h.positions.append({"positionID": int(x["positionID"]), "units": float(x["units"]),
-                                "value_usd": round(val, 2), "openRate": x.get("openRate")})
+                                "value_usd": round(val, 2), "openRate": x.get("openRate"),
+                                "conv": float(r.get("conversionRateBid") or 1)})
         frozen = 0.0
         for o in pending:
             iid = int(o["instrumentID"])

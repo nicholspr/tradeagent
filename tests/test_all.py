@@ -695,7 +695,8 @@ def test_portfolio_shows_price_and_sparkline(eng, monkeypatch):
     importlib.reload(markets)
     importlib.reload(web)
     book = Book(cash_usd=100.0, total_usd=1100.0, holdings={
-        1: Holding(1, "AAA", units=10, value_usd=500.0), 2: Holding(2, "BBB", units=4, value_usd=500.0)})
+        1: Holding(1, "AAA", units=10, value_usd=500.0, positions=[{"units": 10, "openRate": 40.0, "conv": 1.0}]),
+        2: Holding(2, "BBB", units=4, value_usd=500.0)})
 
     class EC:
         def daily_candles(self, iid, count=365):
@@ -706,7 +707,11 @@ def test_portfolio_shows_price_and_sparkline(eng, monkeypatch):
     sparks = markets.holding_sparks(EC(), [1, 2])
     assert sparks[1] == [40, 45, 60] and sparks[2] == []
     html = web.portfolio_card(book, web.store.get_settings(), sparks)
-    assert "<th>Price</th>" in html and "<th>30 days</th>" in html
+    assert "<th>Price" in html and "<th>30 days</th>" in html
+    assert html.index("<th>Units</th>") < html.index("<th>Value</th>")          # Units sits next to Value
+    assert html.index("<th>Value</th>") - html.index("<th>Units</th>") < 30
+    assert "▲ +$100.00 (+25.00%)" in html                                        # 500 now vs 10 x 40 paid
+    assert html.count("gain/loss") == 1 and html.count("▲") == 1                  # BBB has no cost basis: no P/L shown
     assert "$50.00" in html and "$125.00" in html                 # 500/10 and 500/4 per unit
     assert html.count("<svg class=spark") == 1                    # AAA only; BBB shows n/a
     assert "#22c55e" in html                                      # AAA trended up

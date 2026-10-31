@@ -369,14 +369,21 @@ def portfolio_card(book, s: dict, sparks: dict | None = None) -> str:
         if pts and price:
             pts.append(price)              # end the line on the live price
         trend = sparkline(pts, pts[-1] >= pts[0]) if len(pts) >= 2 else "<span class=muted>n/a</span>"
+        cost = h.cost_usd
+        pnl = ""
+        if cost and h.units > 0:
+            diff = h.value_usd - cost
+            cls = "up" if diff >= 0 else "down"
+            pnl = (f"<div class='chg {cls}'><small>{'▲' if diff >= 0 else '▼'} {'+' if diff >= 0 else '-'}${abs(diff):,.2f} "
+                   f"({diff / cost * 100:+.2f}%)</small></div>")
         rows += (f"<tr><td><b>{esc(h.symbol)}</b>{flag}</td>"
-                 f"<td>{('$' + fmt_price(price)) if price else ''}</td><td class=sparkcell>{trend}</td>"
-                 f"<td>${h.value_usd:,.2f}</td>"
+                 f"<td>{('$' + fmt_price(price)) if price else ''}{pnl}</td><td class=sparkcell>{trend}</td>"
+                 f"<td>{h.units:.6g}</td><td>${h.value_usd:,.2f}</td>"
                  f"<td class=barcell>{alloc_bar(share, cap)}<span class=muted>{share:.0f}%</span></td>"
-                 f"<td>{h.units:.6g}</td><td>{'$%.2f' % h.pending_usd if h.pending_usd else ''}</td></tr>")
+                 f"<td>{'$%.2f' % h.pending_usd if h.pending_usd else ''}</td></tr>")
     cash_share = book.cash_usd / total * 100 if total else 0
-    rows += (f"<tr><td><span class=muted>Cash</span></td><td></td><td></td><td>${book.cash_usd:,.2f}</td>"
-             f"<td class=barcell>{alloc_bar(cash_share, 0)}<span class=muted>{cash_share:.0f}%</span></td><td></td><td></td></tr>")
+    rows += (f"<tr><td><span class=muted>Cash</span></td><td></td><td></td><td></td><td>${book.cash_usd:,.2f}</td>"
+             f"<td class=barcell>{alloc_bar(cash_share, 0)}<span class=muted>{cash_share:.0f}%</span></td><td></td></tr>")
     note = ""
     if warns:
         note = ("<p class=muted>" + "; ".join(
@@ -387,7 +394,7 @@ def portfolio_card(book, s: dict, sparks: dict | None = None) -> str:
     return (f"<div class=stat><div><div class=muted>Total</div><div class=big>${book.total_usd:,.2f}</div></div>"
             f"<div><div class=muted>Cash</div><div class=big>${book.cash_usd:,.2f}</div></div>"
             f"<div><div class=muted>Holdings</div><div class=big>{sum(1 for h in holdings if h.units > 0)}</div></div></div>"
-            + table(rows, "<tr><th>Holding</th><th>Price</th><th>30 days</th><th>Value</th><th>Share of portfolio</th><th>Units</th><th>Pending buys</th></tr>") + note)
+            + table(rows, "<tr><th>Holding</th><th>Price <span class=muted>(gain/loss vs cost)</span></th><th>30 days</th><th>Units</th><th>Value</th><th>Share of portfolio</th><th>Pending buys</th></tr>") + note)
 
 
 @app.get("/health")
