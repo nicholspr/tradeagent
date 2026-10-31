@@ -690,6 +690,49 @@ def test_manual_execute_approves_pending(eng):
     assert engine.manual_execute(pid)["error"] == "not executable"                  # already done
 
 
+def test_preflight_explains_blocks_and_fixes(eng, monkeypatch):
+    engine, store, sent, fs, rating = eng
+    from fastapi.testclient import TestClient
+    from app import web
+    importlib.reload(web)
+    monkeypatch.setattr(web.sched, "start", lambda: None)
+    item = policy.WatchItem("META", "META")
+    before = len(fs.calls)
+    clear = engine.preflight(item)
+    buy = clear["sides"][0]
+    assert buy["label"] == "Buy" and buy["ok"] and buy["amount"] == 25 and not buy["blocks"]
+    assert not orders(fs) and engine.daily_usage()["analyses"] == 0       # no order, no analysis run
+
+    pid = engine.analyse(item)["pending"]
+    engine.decide(pid, approve=True)
+    store.set_setting("max_trades_per_day", "1")
+    blocked = engine.preflight(item)["sides"][0]
+    assert not blocked["ok"]
+    text = " ".join(blocked["fixes"])
+    assert "cooldown" in " ".join(blocked["blocks"]) and "Days between trades" in text and "Wait about" in text
+    assert "daily trade limit" in " ".join(blocked["blocks"]) and "Reset daily limits" in text
+
+    store.set_setting("kill_switch", "on")
+    assert "kill switch" in " ".join(engine.preflight(item)["sides"][0]["fixes"])
+    store.set_setting("kill_switch", "off")
+    store.set_setting("allow_sells", "off")
+    sell = engine.preflight(item)["sides"][1]
+    assert not sell["ok"] and "Allow sells" in " ".join(sell["fixes"])
+    store.set_setting("allow_sells", "on")
+    store.set_setting("cash_buffer_usd", "100000")
+    assert "Cash to keep" in " ".join(engine.preflight(item)["sides"][0]["fixes"])
+    assert len(orders(fs)) == 1                                           # only the one approved order, never from the check
+
+    with TestClient(web.app) as c:
+        page = c.get("/preflight?symbol=META").text
+        assert "blocked" in page and "To allow it" in page and "Run analysis now" in page
+        assert "action='/run'" in page.replace(web.B, "") or "/run'" in page
+        assert c.get("/preflight?symbol=NOPE").status_code == 404
+        home = c.get("/").text
+        assert "Check and analyse" in home and "action='/preflight'" in home.replace(web.B, "")
+    assert len(orders(fs)) == 1
+
+
 def test_portfolio_has_live_clock(eng, monkeypatch):
     engine, store, sent, fs, rating = eng
     from fastapi.testclient import TestClient

@@ -174,6 +174,64 @@ def _act(symbol, inst, book, s, rating, decision, run_id, prop, manual=False) ->
     return {"rating": rating, "auto": pid, "result": result}
 
 
+def _fixes(blocks: list[str], s: dict, *, spent: float, last_trade_iso: str | None, now: datetime) -> list[str]:
+    """Plain-English ways to clear each limit that blocked a trade."""
+    out = []
+    for b in blocks:
+        if b.startswith("kill switch"):
+            out.append("Turn the kill switch off (Settings, Control).")
+        elif b.startswith("daily trade limit"):
+            out.append(f"Raise 'Max trades per day' (now {s['max_trades_per_day']}), press 'Reset daily limits' "
+                       f"in Settings, or wait until tomorrow.")
+        elif b.startswith("cooldown") and last_trade_iso:
+            days = float(s.get("cooldown_days") or 0)
+            left = datetime.fromisoformat(last_trade_iso) + timedelta(days=days) - now
+            hrs = max(left.total_seconds() / 3600, 0)
+            when = f"{hrs / 24:.1f} days" if hrs >= 48 else f"{hrs:.1f} hours"
+            out.append(f"Wait about {when}, or lower 'Days between trades' (now {s['cooldown_days']}) "
+                       f"to below {max(days - left.total_seconds() / 86400, 0):.2f}. 0 turns the cooldown off for every holding.")
+        elif b.startswith("buy below"):
+            if "cash" in b:
+                out.append(f"Add cash to the account, or lower 'Cash to keep' (now ${s['cash_buffer_usd']}).")
+            if "daily spend" in b:
+                out.append(f"Raise 'Max buys per day' (now ${s['max_daily_usd']}, ${spent:.2f} used) or press "
+                           f"'Reset daily limits' in Settings.")
+            if "position cap" in b:
+                out.append(f"Raise 'Max in one holding' (now {s['max_position_pct']}%), or add cash so the holding "
+                           f"is a smaller share of the portfolio.")
+        else:
+            out.append(b)
+    return out
+
+
+def preflight(item: policy.WatchItem) -> dict:
+    """Would a Buy or a Sell/Underweight for this share be allowed right now? No AI call, nothing is placed."""
+    s = store.get_settings()
+    ec = client()
+    inst = ec.find_instrument(item.symbol)
+    book = ec.book()
+    h = book.holdings.get(inst["instrumentId"])
+    since = _tracking_start_iso()
+    spent = sum(p["amount_usd"] or 0 for p in store.executed_since(since) if p["action"] == "buy")
+    last = store.last_executed_for(inst["instrumentId"])
+    now = _utc_now()
+    out = {"symbol": item.symbol, "mode": s["mode"], "market_open": bool(inst["tradable"]), "sides": []}
+    for label, rating in (("Buy", "Buy"), ("Sell half", "Underweight")):
+        prop = policy.propose(rating, holding_value=h.value_usd if h else 0.0,
+                              holding_positions=h.positions if h else [], pending_usd=h.pending_usd if h else 0.0,
+                              cash=book.cash_usd, portfolio_total=book.total_usd, s=s)
+        if prop.action == "none":
+            out["sides"].append({"label": label, "ok": False, "blocks": [prop.reason], "fixes": [
+                "Switch 'Allow sells' on in Settings." if "switched off" in prop.reason
+                else "Nothing to do: you don't hold this share."]})
+            continue
+        sized, blocks = _limits(prop, inst, book, s, tradable=True)
+        side = {"label": label, "ok": sized is not None, "amount": sized.amount_usd if sized else None, "blocks": blocks}
+        side["fixes"] = _fixes(blocks, s, spent=spent, last_trade_iso=last, now=now)
+        out["sides"].append(side)
+    return out
+
+
 def _limits(prop, inst, book, s, *, tradable: bool):
     h = book.holdings.get(inst["instrumentId"])
     since = _tracking_start_iso()

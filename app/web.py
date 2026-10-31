@@ -502,9 +502,10 @@ def dashboard():
     items = "".join(f"<option>{esc(i.symbol)}</option>" for i in policy.parse_watchlist(s["watchlist"]))
     active = active_runs()
     running = bool(active)
-    run_card = (f"<form method=post action='{B}/run' class=row><div class=grow><select name=symbol>{items}</select></div>"
-                f"<button>Analyse</button></form>"
-                f"<p class=muted>Takes several minutes and costs roughly $0.50–$3 in Claude usage. Follows the current mode.</p>"
+    run_card = (f"<form method=get action='{B}/preflight' class=row><div class=grow><select name=symbol>{items}</select></div>"
+                f"<button>Check and analyse</button></form>"
+                f"<p class=muted>First checks whether your limits would allow a trade, then you choose to run it. "
+                f"The analysis takes several minutes and costs roughly $0.50–$3 in Claude usage. Follows the current mode.</p>"
                 + (f"<p><span class='pill warn'>running</span> " + ", ".join(
                     f"<a href='{B}/run/{r['id']}'><b>{esc(r['ticker'])}</b></a> <span class=muted>({run_duration(r)})</span>"
                     for r in active) + "</p><p class=muted>This page refreshes every 30 seconds.</p>" if running else ""))
@@ -811,6 +812,47 @@ def cancel_queued(pid: int):
     if r.get("error"):
         store.log("warn", f"cancel of proposal #{pid} ignored: {r['error']} (status {r.get('status')})")
     return back()
+
+
+@app.get("/preflight", response_class=HTMLResponse)
+def preflight_page(symbol: str):
+    items = {i.symbol: i for i in policy.parse_watchlist(store.get_settings()["watchlist"])}
+    item = items.get(symbol.upper())
+    if not item:
+        raise HTTPException(404, "not in watchlist")
+    try:
+        r = engine.preflight(item)
+    except Exception as e:  # noqa: BLE001
+        return page("Check", f"<h1>{esc(item.symbol)}</h1><div class=card><p class=muted>Couldn't check the limits: {esc(str(e))}</p>"
+                    f"{run_form(item.symbol, 'Analyse anyway')}</div>", active="Overview")
+    rows = ""
+    for side in r["sides"]:
+        if side["ok"]:
+            what = (f"<span class='pill okp'>allowed</span> up to ${side['amount']:,.2f}" if side.get("amount") and side["label"] == "Buy"
+                    else "<span class='pill okp'>allowed</span>")
+            detail = ""
+        else:
+            what = "<span class='pill on'>blocked</span>"
+            detail = ("<ul>" + "".join(f"<li>{esc(b)}</li>" for b in side["blocks"]) + "</ul>"
+                      + ("<p><b>To allow it:</b></p><ul>" + "".join(f"<li>{esc(f)}</li>" for f in side["fixes"]) + "</ul>"
+                         if side["fixes"] else ""))
+        rows += f"<tr><td><b>{esc(side['label'])}</b></td><td>{what}{detail}</td></tr>"
+    notes = ""
+    if r["mode"] == "signals":
+        notes += "<p class=muted>Mode is Signals only: even an allowed trade is only suggested, never placed.</p>"
+    if not r["market_open"]:
+        notes += "<p class=muted>The market is closed now, so an approved trade would queue until it opens.</p>"
+    if not any(s["ok"] for s in r["sides"]):
+        notes += "<p><b>As things stand, no trade for this share could happen</b>, whatever the agents say. Change the limits above first, or analyse for the research only.</p>"
+    return page("Check", f"<h1>{esc(item.symbol)} <span class=muted>can a trade happen now?</span></h1>"
+                f"<div class=card><table>{rows}</table>{notes}</div>"
+                f"<div class=card style='margin-top:16px'>{run_form(item.symbol, 'Run analysis now')}"
+                f"<p class=muted>Costs roughly $0.50–$3 and takes several minutes. "
+                f"<a href='{B}/settings'>Open Settings</a> to change limits, then check again.</p></div>", active="Overview")
+
+
+def run_form(symbol: str, label: str) -> str:
+    return f"<form method=post action='{B}/run'><input type=hidden name=symbol value='{esc(symbol)}'><button>{esc(label)}</button></form>"
 
 
 @app.post("/run")
