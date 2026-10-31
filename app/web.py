@@ -3,6 +3,7 @@ import html
 import hmac
 import threading
 from contextlib import asynccontextmanager
+from datetime import datetime, timedelta, timezone
 
 from apscheduler.schedulers.background import BackgroundScheduler
 from apscheduler.triggers.cron import CronTrigger
@@ -79,6 +80,11 @@ th{color:var(--muted);font-weight:600;white-space:nowrap}tr:hover td{background:
 .big{font-size:28px;font-weight:700}.stat{display:flex;gap:28px;flex-wrap:wrap;margin-bottom:12px}
 .pill{display:inline-block;padding:2px 8px;border-radius:999px;font-size:12px;background:var(--chip);color:var(--text);white-space:nowrap}
 .real{background:var(--red-bg);color:var(--red-t)}.demo{background:var(--blue-bg);color:var(--blue-t)}.on{background:var(--red-bg);color:var(--red-t)}
+.live{background:var(--red-bg);color:var(--red-t)}.test{background:#3a2e12;color:#fcd34d}
+.warn{background:#3a2e12;color:#fcd34d}.okp{background:#12301f;color:#86efac}
+.banner{padding:10px 20px;font-size:14px;font-weight:600}
+.banner.stop{background:var(--red-bg);color:var(--red-t);border-bottom:1px solid #5b2327}
+.banner.warn{background:#3a2e12;color:#fcd34d;border-bottom:1px solid #5a4818}
 button{border:0;border-radius:8px;padding:9px 14px;font-size:14px;cursor:pointer;background:var(--accent);color:#fff;min-height:38px;white-space:nowrap}
 button:hover{background:var(--accent-h)}button.sec{background:var(--chip);color:var(--text);border:1px solid var(--line)}
 button.sec:hover{background:#2c3342}button.red{background:#b91c1c}button.red:hover{background:#991b1b}
@@ -100,19 +106,83 @@ pre{white-space:pre-wrap;font-size:13px;margin:0}p{margin:10px 0 0}
 NAV = [("Overview", "/"), ("Settings", "/settings")]
 
 
+MODE_LABELS = {"signals": "Signals only", "approval": "Approval", "auto": "Automatic"}
+
+
+def status_strip(s: dict) -> tuple[str, str]:
+    """Header pills and an optional banner describing what the app can do right now."""
+    real = config.ETORO_ENV == "real"
+    kill = s.get("kill_switch") == "on"
+    mode = s.get("mode", "approval")
+    live_orders = not config.DRY_RUN
+    pills = (f"<span class='pill {'real' if real else 'demo'}' title='eToro account used'>"
+             f"{'REAL' if real else 'DEMO'} account</span>"
+             + (f"<span class='pill {'live' if live_orders else 'test'}' title='Whether orders are sent to eToro'>"
+                f"{'LIVE orders' if live_orders else 'TEST MODE: no orders sent'}</span>")
+             + f"<span class='pill {'warn' if mode == 'auto' else ''}' title='Trading mode'>"
+               f"Mode: {MODE_LABELS.get(mode, esc(mode))}</span>"
+             + (f"<span class='pill on'>KILL SWITCH ON</span>" if kill else
+                "<span class='pill okp' title='New orders are allowed'>Trading enabled</span>"))
+    if kill:
+        banner = "<div class='banner stop'>Kill switch is ON: no new orders will be placed in any mode.</div>"
+    elif live_orders and mode == "auto":
+        banner = (f"<div class='banner warn'>Automatic mode is live: buys are placed on your "
+                  f"{'REAL' if real else 'DEMO'} account without approval, within your limits.</div>")
+    else:
+        banner = ""
+    return pills, banner
+
+
+STATUS_CLS = {"pending": "warn", "approved": "demo", "executed": "okp", "failed": "on", "blocked": "on",
+              "expired": "", "rejected": "", "signal": "demo"}
+
+
+def status_pill(status: str) -> str:
+    return f"<span class='pill {STATUS_CLS.get(status, '')}'>{esc(status)}</span>"
+
+
+def time_left(p: dict, s: dict, now: datetime | None = None) -> str:
+    """Human text for how long a pending/approved proposal has before it expires."""
+    now = now or datetime.now(timezone.utc)
+    try:
+        if p["status"] == "pending":
+            end = datetime.fromisoformat(p["created"]) + timedelta(hours=float(s["approval_ttl_hours"] or 6))
+        else:
+            end = datetime.fromisoformat(p["decided"] or p["created"]) + timedelta(hours=24)
+    except (TypeError, ValueError):
+        return ""
+    secs = int((end - now).total_seconds())
+    if secs <= 0:
+        return "expiring now"
+    h, m = divmod(secs // 60, 60)
+    return f"expires in {h}h {m:02d}m" if h else f"expires in {m}m"
+
+
+def queue_row(p: dict, s: dict) -> str:
+    tok = engine.token_for(p["id"], p["created"])
+    why = esc((p.get("reason") or "")[:140])
+    if p["status"] == "pending":
+        acts = (f"<div class=row><form method=post action='{B}/p/{p['id']}/{tok}/approve'><button>Approve</button></form>"
+                f"<form method=post action='{B}/p/{p['id']}/{tok}/reject'><button class=sec>Reject</button></form>"
+                f"<a href='{B}/p/{p['id']}/{tok}'>Details</a></div>")
+    else:
+        waiting = "waiting for market to open" if p.get("error") == "waiting for market" else "approved, queued"
+        acts = f"<span class=muted>{waiting}</span>"
+    return (f"<tr><td>#{p['id']}</td><td><b>{esc(engine._describe(p))}</b><br>"
+            f"<span class=muted>{esc(p['rating'] or '')}{' · ' + why if why else ''}</span></td>"
+            f"<td>{status_pill(p['status'])}<br><span class=muted>{time_left(p, s)}</span></td><td>{acts}</td></tr>")
+
+
 def page(title: str, body: str, refresh: int = 0, active: str = "", nav: bool = True) -> HTMLResponse:
     s = store.get_settings()
     meta = f"<meta http-equiv=refresh content={refresh}>" if refresh else ""
-    env_cls = "real" if config.ETORO_ENV == "real" else "demo"
-    pills = (f"<span class='pill {env_cls}'>{config.ETORO_ENV.upper()} account</span>"
-             + ("<span class=pill>TEST MODE</span>" if config.DRY_RUN else "")
-             + ("<span class='pill on'>KILL SWITCH ON</span>" if s.get("kill_switch") == "on" else ""))
+    pills, banner = status_strip(s)
     links = "".join(f"<a href='{B}{u}' class='{'active' if n == active else ''}'>{n}</a>" for n, u in NAV) if nav else ""
     head = (f"<header><a class=brand href='{B}/'>TradeAgent</a><div class=pills>{pills}</div>"
             f"{'<nav>' + links + '</nav>' if nav else ''}</header>")
     return HTMLResponse(f"<!doctype html><html><head><meta charset=utf-8><meta name=theme-color content='#0b0e13'>{meta}"
                         f"<meta name=viewport content='width=device-width,initial-scale=1'><title>{esc(title)} · TradeAgent</title>"
-                        f"<style>{CSS}</style></head><body>{head}<main>{body}</main></body></html>")
+                        f"<style>{CSS}</style></head><body>{head}{banner}<main>{body}</main></body></html>")
 
 
 def card(title: str, inner: str, cls: str = "c12", right: str = "") -> str:
@@ -145,17 +215,10 @@ def dashboard():
         port = f"<p class=muted>Portfolio unavailable: {esc(str(e))}</p>"
 
     pend = store.proposals("pending", 20) + store.proposals("approved", 20)
-    prow = "".join(
-        f"<tr><td>#{p['id']}</td><td><b>{esc(p['ticker'])}</b></td><td>{esc(p['rating'] or '')}</td>"
-        f"<td>{esc(engine._describe(p))}</td><td>"
-        + (f"<div class=row><form method=post action='{B}/p/{p['id']}/{engine.token_for(p['id'], p['created'])}/approve'>"
-           f"<button>Approve</button></form>"
-           f"<form method=post action='{B}/p/{p['id']}/{engine.token_for(p['id'], p['created'])}/reject'>"
-           f"<button class=sec>Reject</button></form></div>" if p["status"] == "pending" else "queued until market opens")
-        + "</td></tr>" for p in pend) or "<tr><td class=muted>Nothing waiting.</td></tr>"
+    prow = "".join(queue_row(p, s) for p in pend) or "<tr><td class=muted>Nothing waiting.</td></tr>"
     hist = "".join(
         f"<tr><td>#{p['id']}</td><td>{p['created'][:16].replace('T', ' ')}</td><td><b>{esc(p['ticker'])}</b></td><td>{esc(p['rating'] or '')}</td>"
-        f"<td>{esc(engine._describe(p)) if p['action'] != 'none' else ''}</td><td>{p['status']}</td>"
+        f"<td>{esc(engine._describe(p)) if p['action'] != 'none' else ''}</td><td>{status_pill(p['status'])}</td>"
         f"<td class=muted>{esc((p['error'] or p['reason'] or '')[:120])}</td></tr>"
         for p in store.proposals(None, 25)) or "<tr><td class=muted>None yet.</td></tr>"
     runs = "".join(
@@ -192,7 +255,8 @@ def dashboard():
     body = ("<div class=layout>"
             + card("Control", control, "c4")
             + card("Portfolio", port, "c8")
-            + card("Waiting for you", table(prow), "c6")
+            + card("Waiting for you", table(prow), "c6",
+                   f"<span class='pill {'warn' if pend else ''}'>{len(pend)}</span>")
             + card("Run an analysis now", run_card, "c3" if config.DRY_RUN else "c6")
             + test_card
             + card("Recent calls", table(hist, "<tr><th>#</th><th>When</th><th>Symbol</th><th>Rating</th><th>Trade</th><th>Status</th><th>Note</th></tr>"), "c8")

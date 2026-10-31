@@ -274,6 +274,48 @@ def test_dashboard_autorefresh_while_running(eng, monkeypatch):
         assert "http-equiv=refresh" not in c.get("/").text
 
 
+def test_status_strip_shows_state(eng, monkeypatch):
+    engine, store, sent, fs, rating = eng
+    from fastapi.testclient import TestClient
+    from app import config, web
+    importlib.reload(web)
+    monkeypatch.setattr(web.sched, "start", lambda: None)
+    with TestClient(web.app) as c:
+        html = c.get("/").text
+        assert "LIVE orders" in html and "Mode: Approval" in html and "Trading enabled" in html
+        assert "class='banner" not in html
+        store.set_setting("kill_switch", "on")
+        html = c.get("/").text
+        assert "KILL SWITCH ON" in html and "banner stop" in html
+        store.set_setting("kill_switch", "off")
+        store.set_setting("mode", "auto")
+        assert "banner warn" in c.get("/").text
+        monkeypatch.setattr(config, "DRY_RUN", True)
+        html = c.get("/").text
+        assert "TEST MODE" in html and "banner warn" not in html
+
+
+def test_approval_queue_shows_expiry_and_reason(eng, monkeypatch):
+    engine, store, sent, fs, rating = eng
+    from fastapi.testclient import TestClient
+    from app import web
+    importlib.reload(web)
+    monkeypatch.setattr(web.sched, "start", lambda: None)
+    pid = engine.analyse(policy.WatchItem("META", "META"))["pending"]
+    p = store.get_proposal(pid)
+    s = store.get_settings()
+    created = datetime.fromisoformat(p["created"])
+    assert web.time_left(p, s, created + timedelta(hours=1, minutes=30)) == "expires in 4h 30m"
+    assert web.time_left(p, s, created + timedelta(hours=5, minutes=45)) == "expires in 15m"
+    assert web.time_left(p, s, created + timedelta(hours=7)) == "expiring now"
+    with TestClient(web.app) as c:
+        html = c.get("/").text
+        assert "expires in" in html and "rating Buy" in html and "Details" in html
+        assert "pill warn'>pending" in html and f"/p/{pid}/" in html
+        engine.decide(pid, approve=False)
+        assert "Nothing waiting." in c.get("/").text
+
+
 def test_create_test_trade_only_in_dry_run(eng, monkeypatch):
     engine, store, sent, fs, rating = eng
     from app import config

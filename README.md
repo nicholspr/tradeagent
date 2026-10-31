@@ -54,6 +54,31 @@ python -m pytest -q tests
 DATA_DIR=./data uvicorn app.web:app --reload
 ```
 
-Code layout: `app/policy.py` holds the limits (pure, unit-tested). `app/engine.py` handles analyse, propose, approve and execute. `app/etoro.py` is the eToro API client. `app/analyst.py` is the TradingAgents wrapper. `app/web.py` is the dashboard, approval pages and scheduler.
+### Project context
+
+This is an existing personal trading application, not a broker simulator. TradingAgents researches a watchlist item and returns a rating and written decision; this app maps the rating to a proposal and, depending on the selected mode, sends a signal, waits for approval, or attempts an eToro order. Treat all changes to proposal sizing, approval, execution, or account selection as safety-sensitive.
+
+The main code paths are:
+
+- `app/analyst.py` adapts the TradingAgents graph and passes in the portfolio context.
+- `app/policy.py` parses the watchlist, maps ratings to proposals, applies the hard trading limits, and decides when approval is required. Its functions are pure and covered by tests.
+- `app/engine.py` orchestrates analysis, proposal creation, approval, execution, scheduling, and audit events. It re-checks limits against the current portfolio before execution.
+- `app/etoro.py` implements the eToro API calls and builds a portfolio view from eligible positions and pending orders.
+- `app/store.py` persists settings, secrets, runs, proposals, and events in SQLite under `DATA_DIR`.
+- `app/web.py` serves the dashboard, settings, approval pages, and scheduled jobs.
+- `app/notify.py` sends optional SMS and email alerts.
+- `tests/test_all.py` exercises policy, eToro client behavior, and application flows using fakes.
+
+### Development and safety notes
+
+- The dashboard's `Approval` mode is the default. `Automatic` may place buys without approval; sells still require approval unless `auto_sells` is enabled. `Signals` never places orders.
+- `DRY_RUN=true` is required for the dashboard's AI-free test-trade tool. It records a simulated execution but does not send an order to eToro. Confirm the environment and mode before testing any trade workflow.
+- Do not remove the execution-time limit recheck, kill-switch check, cash buffer, daily caps, position cap, cooldown, or the restrictions on leveraged/short positions without an explicit product decision and corresponding tests.
+- Approval-link GET requests are deliberately read-only. Only the explicit approve/reject POST action decides a proposal; preserve this behavior to prevent link-preview bots from approving trades.
+- The eToro v2 instrument-search fallback uses a recent rate as a tradability heuristic when the ordinary search result is missing. A fresh quote is not a definitive exchange-hours or order-acceptance guarantee; execution must continue to handle eToro rejection and queued market-closed orders.
+- The Claude project handoff reported adding FRED configuration, but did not conclusively verify that an analysis actually used FRED data. Check a concrete analysis report or upstream logs before treating that integration as confirmed.
+- The application has been developed for deployment behind Traefik at `/trader/`, with shared site authentication on dashboard routes and separate token-protected approval links. Local behavior and live VPS configuration can differ; verify deployment settings independently rather than assuming a code change is live.
+
+Before deploying a change, run `python -m pytest -q tests`. For deployment, use `DRY_RUN=true` first and verify the resulting proposal, audit trail, notification, and account environment. Never assume that pushing to GitHub redeploys the VPS; redeploy separately and confirm the running version.
 
 *This is a research tool, not financial advice. AI trading decisions can lose money, and past results do not predict future ones.*
