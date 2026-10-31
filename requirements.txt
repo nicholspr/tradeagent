@@ -1,0 +1,7 @@
+tradingagents @ git+https://github.com/TauricResearch/TradingAgents.git@v0.7.1
+fastapi>=0.115
+uvicorn>=0.30
+apscheduler>=3.10,<4
+requests>=2.32
+python-multipart>=0.0.9
+pytest>=8.0

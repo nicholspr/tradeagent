@@ -1,0 +1,271 @@
+"""Orchestration: analyse -> propose -> (signal | approve | auto-execute) -> notify."""
+import hashlib
+import hmac
+import threading
+from datetime import datetime, timedelta, timezone
+from zoneinfo import ZoneInfo
+
+from . import analyst, config, notify, policy, store
+from .etoro import EtoroClient, EtoroError
+
+_run_lock = threading.Lock()          # one analysis at a time (LLM cost + rate limits)
+_exec_lock = threading.Lock()         # one order at a time
+
+
+def client() -> EtoroClient:
+    return EtoroClient()
+
+
+def _utc_now() -> datetime:
+    return datetime.now(timezone.utc)
+
+
+def _day_start_iso() -> str:
+    tz = ZoneInfo(config.TZ)
+    start = datetime.now(tz).replace(hour=0, minute=0, second=0, microsecond=0)
+    return start.astimezone(timezone.utc).isoformat(timespec="seconds")
+
+
+def token_for(pid: int, created: str) -> str:
+    return hmac.new(config.APP_SECRET.encode(), f"{pid}:{created}".encode(), hashlib.sha256).hexdigest()[:32]
+
+
+def link_for(p: dict) -> str:
+    return f"{config.PUBLIC_BASE_URL}/p/{p['id']}/{token_for(p['id'], p['created'])}"
+
+
+def _portfolio_context(book) -> dict:
+    return {"cash": book.cash_usd, "currency": "USD",
+            "positions": [{"ticker": h.symbol, "quantity": round(h.units, 6),
+                           "average_price": (round(sum(p["openRate"] * p["units"] for p in h.positions) / h.units, 4)
+                                             if h.units else None)}
+                          for h in book.holdings.values() if h.units > 0]}
+
+
+def _describe(p: dict) -> str:
+    if p["action"] == "buy":
+        return f"BUY {p['ticker']} ${p['amount_usd']:.2f}"
+    if p["action"] == "close":
+        return f"SELL ALL {p['ticker']} (~${p['amount_usd']:.2f})"
+    return f"SELL HALF {p['ticker']} (~${p['amount_usd']:.2f})"
+
+
+def _first_lines(text: str, n: int = 600) -> str:
+    t = " ".join((text or "").split())
+    return t[:n] + ("…" if len(t) > n else "")
+
+
+# ---------------------------------------------------------------- analysis
+def analyse(item: policy.WatchItem, *, manual: bool = False) -> dict:
+    """Run the agents for one watchlist item and act on the result per the current mode."""
+    if not _run_lock.acquire(blocking=False):
+        store.log("warn", f"analysis of {item.symbol} skipped: another analysis is running")
+        return {"skipped": True}
+    try:
+        return _analyse(item, manual=manual)
+    finally:
+        _run_lock.release()
+
+
+def _analyse(item: policy.WatchItem, *, manual: bool) -> dict:
+    s = store.get_settings()
+    run_id = store.start_run(item.symbol)
+    ec = client()
+    try:
+        inst = ec.find_instrument(item.symbol)
+        book = ec.book()
+        store.log("info", f"analysing {item.symbol} ({item.yf}, {item.asset_type})")
+        rating, decision = analyst.analyze(item.yf, item.asset_type, _portfolio_context(book))
+        store.finish_run(run_id, rating, decision)
+    except Exception as e:  # noqa: BLE001
+        store.finish_run(run_id, None, None, error=str(e)[:1000])
+        store.log("error", f"analysis of {item.symbol} failed: {e}")
+        notify.email(f"Analysis failed: {item.symbol}", f"{e}")
+        return {"error": str(e)}
+
+    h = book.holdings.get(inst["instrumentId"])
+    hv, hpos, hpend = (h.value_usd, h.positions, h.pending_usd) if h else (0.0, [], 0.0)
+    prop = policy.propose(rating, holding_value=hv, holding_positions=hpos, pending_usd=hpend,
+                          cash=book.cash_usd, portfolio_total=book.total_usd, s=s)
+    summary = _first_lines(decision)
+    base = {"run_id": run_id, "ticker": item.symbol, "instrument_id": inst["instrumentId"],
+            "action": prop.action, "amount_usd": prop.amount_usd, "units": prop.units,
+            "position_ids": prop.position_ids, "rating": rating, "mode": s["mode"]}
+
+    if prop.action == "none":
+        store.log("info", f"{item.symbol}: {prop.reason}")
+        if manual or rating.lower() not in ("hold",):
+            notify.email(f"{item.symbol}: {rating}", f"{prop.reason}\n\n{decision}\n\n{config.PUBLIC_BASE_URL}/run/{run_id}")
+        return {"rating": rating, "action": "none"}
+
+    # Size against limits now (tradable assumed; re-checked at execution time).
+    sized, blocks = _limits(prop, inst, book, s, tradable=True)
+    if sized is None:
+        pid = store.add_proposal({**base, "status": "blocked", "reason": "; ".join(blocks)})
+        msg = f"{item.symbol}: agent says {rating}, blocked by limits: {'; '.join(blocks)}"
+        store.log("info", msg)
+        notify.email(f"{item.symbol}: {rating} (blocked)", f"{msg}\n\n{decision}")
+        return {"rating": rating, "blocked": blocks, "proposal": pid}
+
+    base.update(amount_usd=sized.amount_usd, units=sized.units, position_ids=sized.position_ids)
+    if s["mode"] == "signals":
+        pid = store.add_proposal({**base, "status": "signal", "reason": sized.reason})
+        p = store.get_proposal(pid)
+        notify.both(f"Signal: {_describe(p)}",
+                    f"TradeAgent signal: {_describe(p)} (rating {rating}). Signals mode: place it yourself if you agree.",
+                    f"{_describe(p)} — rating {rating}\n\n{decision}")
+        return {"rating": rating, "signal": pid}
+
+    if policy.needs_approval(sized, s):
+        pid = store.add_proposal({**base, "status": "pending", "reason": sized.reason})
+        p = store.get_proposal(pid)
+        url = link_for(p)
+        notify.sms(f"TradeAgent: {_describe(p)} (rating {rating}). Review & approve within "
+                   f"{s['approval_ttl_hours']}h: {url}")
+        notify.email(f"Approve? {_describe(p)}", f"{_describe(p)} — rating {rating}\n\nApprove or reject: {url}\n\n{decision}")
+        return {"rating": rating, "pending": pid}
+
+    pid = store.add_proposal({**base, "status": "approved", "reason": sized.reason})
+    store.update_proposal(pid, decided=_utc_now().isoformat(timespec="seconds"))
+    result = execute(pid)
+    return {"rating": rating, "auto": pid, "result": result}
+
+
+def _limits(prop, inst, book, s, *, tradable: bool):
+    h = book.holdings.get(inst["instrumentId"])
+    spent = sum(p["amount_usd"] or 0 for p in store.executed_since(_day_start_iso()) if p["action"] == "buy")
+    trades = len(store.executed_since(_day_start_iso()))
+    return policy.check_limits(
+        prop, instrument_id=inst["instrumentId"], cash=book.cash_usd, portfolio_total=book.total_usd,
+        holding_value=h.value_usd if h else 0.0, pending_usd=h.pending_usd if h else 0.0,
+        spent_today=spent, trades_today=trades, last_trade_iso=store.last_executed_for(inst["instrumentId"]),
+        tradable=tradable, s=s)
+
+
+# ---------------------------------------------------------------- execution
+def decide(pid: int, approve: bool) -> dict:
+    p = store.get_proposal(pid)
+    if not p or p["status"] != "pending":
+        return {"error": "not pending", "status": p and p["status"]}
+    now = _utc_now().isoformat(timespec="seconds")
+    if not approve:
+        store.update_proposal(pid, status="rejected", decided=now)
+        store.log("info", f"proposal {pid} rejected")
+        return {"status": "rejected"}
+    store.update_proposal(pid, status="approved", decided=now)
+    store.log("info", f"proposal {pid} approved")
+    return execute(pid)
+
+
+def execute(pid: int) -> dict:
+    """Place an approved proposal if limits still pass and the market is open; else leave queued."""
+    with _exec_lock:
+        p = store.get_proposal(pid)
+        if not p or p["status"] != "approved":
+            return {"error": "not approved"}
+        s = store.get_settings()
+        ec = client()
+        try:
+            inst = ec.find_instrument(p["ticker"])
+            book = ec.book()
+        except EtoroError as e:
+            store.update_proposal(pid, error=str(e)[:500])
+            store.log("error", f"proposal {pid}: eToro unavailable: {e}")
+            return {"queued": True, "error": str(e)}
+        if not inst["tradable"]:
+            store.log("info", f"proposal {pid} approved; waiting for {p['ticker']} market to open")
+            return {"queued": True, "reason": "market closed"}
+
+        h = book.holdings.get(inst["instrumentId"])
+        prop = policy.Proposal(p["action"], p["amount_usd"] or 0, p["units"], p["position_ids"], p["reason"] or "")
+        if p["action"] in ("close", "partial_close"):
+            live = {x["positionID"]: x for x in (h.positions if h else [])}
+            prop.position_ids = [i for i in p["position_ids"] if i in live]
+            if not prop.position_ids:
+                return _fail(pid, "positions no longer open")
+        sized, blocks = _limits(prop, inst, book, s, tradable=True)
+        if sized is None:
+            store.update_proposal(pid, status="blocked", error="; ".join(blocks))
+            notify.both("Trade blocked", f"TradeAgent: {_describe(p)} blocked at execution: {'; '.join(blocks)}",
+                        f"{_describe(p)} blocked at execution:\n" + "\n".join(blocks))
+            return {"blocked": blocks}
+
+        if config.DRY_RUN:
+            refs = ["dry-run"]
+        else:
+            try:
+                refs = []
+                if sized.action == "buy":
+                    r = ec.open_buy(inst["symbol"], inst["instrumentId"], sized.amount_usd)
+                    refs.append(str(r.get("orderId") or r.get("token") or r))
+                else:
+                    for pos_id in sized.position_ids:
+                        units = sized.units if sized.action == "partial_close" else None
+                        r = ec.close_position(pos_id, inst["instrumentId"], units)
+                        o = r.get("orderForClose") or r
+                        refs.append(str(o.get("orderID") or o.get("token") or r))
+            except EtoroError as e:
+                return _fail(pid, str(e))
+
+        now = _utc_now().isoformat(timespec="seconds")
+        store.update_proposal(pid, status="executed", executed=now, amount_usd=sized.amount_usd,
+                              order_ref=",".join(refs), error=None)
+        desc = _describe({**p, "amount_usd": sized.amount_usd})
+        env = "DEMO" if ec.demo else "REAL"
+        store.log("info", f"executed proposal {pid}: {desc} [{env}] orders {refs}")
+        notify.both(f"Executed: {desc}", f"TradeAgent [{env}] placed: {desc}. Order {','.join(refs)}",
+                    f"Placed {desc} on your {env} eToro account.\nOrder refs: {refs}\nRating: {p['rating']}")
+        return {"executed": True, "orders": refs}
+
+
+def _fail(pid: int, err: str) -> dict:
+    store.update_proposal(pid, status="failed", error=err[:500])
+    store.log("error", f"proposal {pid} failed: {err}")
+    notify.both("Trade failed", f"TradeAgent: order failed: {err[:200]}", f"Proposal {pid} failed:\n{err}")
+    return {"failed": err}
+
+
+# ---------------------------------------------------------------- scheduled jobs
+def scheduled_analysis(asset: str = "stock") -> None:
+    s = store.get_settings()
+    items = [i for i in policy.parse_watchlist(s["watchlist"]) if (i.asset_type == "crypto") == (asset == "crypto")]
+    budget = int(float(s["analyses_per_day"] or 0)) - store.runs_since(_day_start_iso())
+    if budget <= 0 or not items:
+        return
+    items.sort(key=lambda i: store.last_run_for(i.symbol) or "")   # least recently analysed first
+    for item in items[:budget]:
+        analyse(item)
+
+
+def process_queue() -> None:
+    """Expire stale approvals and execute approved proposals whose market has opened."""
+    s = store.get_settings()
+    ttl = timedelta(hours=float(s["approval_ttl_hours"] or 6))
+    now = _utc_now()
+    for p in store.proposals("pending", 100):
+        if now - datetime.fromisoformat(p["created"]) > ttl:
+            store.update_proposal(p["id"], status="expired", decided=now.isoformat(timespec="seconds"))
+            store.log("info", f"proposal {p['id']} expired")
+    for p in store.proposals("approved", 100):
+        if now - datetime.fromisoformat(p["decided"] or p["created"]) > timedelta(hours=24):
+            store.update_proposal(p["id"], status="expired")
+            continue
+        execute(p["id"])
+
+
+def daily_summary() -> None:
+    try:
+        book = client().book()
+        lines = [f"Portfolio ${book.total_usd:,.2f}, cash ${book.cash_usd:,.2f}"]
+        for h in sorted(book.holdings.values(), key=lambda h: -h.value_usd):
+            lines.append(f"  {h.symbol}: ${h.value_usd:,.2f}" + (f" (+${h.pending_usd:.2f} pending)" if h.pending_usd else ""))
+    except Exception as e:  # noqa: BLE001
+        lines = [f"Portfolio unavailable: {e}"]
+    since = _day_start_iso()
+    todays = [p for p in store.proposals(None, 100) if p["created"] >= since]
+    s = store.get_settings()
+    lines += ["", f"Mode: {s['mode']}  Kill switch: {s['kill_switch']}", f"Today's calls: {len(todays)}"]
+    lines += [f"  #{p['id']} {p['ticker']} {p['rating']} {p['action']} ${p['amount_usd'] or 0:.2f} -> {p['status']}"
+              for p in todays]
+    body = "\n".join(lines) + f"\n\nDashboard: {config.PUBLIC_BASE_URL}/"
+    notify.email("Daily summary", body)

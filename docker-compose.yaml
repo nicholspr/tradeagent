@@ -1,0 +1,65 @@
+services:
+  app:
+    build:
+      context: https://github.com/nicholspr/tradeagent.git#main
+      dockerfile: Dockerfile
+    container_name: tradeagent
+    restart: unless-stopped
+    environment:
+      TZ: Europe/London
+      ROOT_PATH: /trader
+      ETORO_API_KEY: ${ETORO_API_KEY:-}
+      ETORO_USER_KEY: ${ETORO_USER_KEY:-}
+      ETORO_ENV: ${ETORO_ENV:-}
+      DRY_RUN: ${DRY_RUN:-}
+      ANTHROPIC_API_KEY: ${ANTHROPIC_API_KEY:-}
+      TA_DEEP_MODEL: ${TA_DEEP_MODEL:-}
+      TA_QUICK_MODEL: ${TA_QUICK_MODEL:-}
+      FRED_API_KEY: ${FRED_API_KEY:-}
+      SEC_EDGAR_USER_AGENT: ${SEC_EDGAR_USER_AGENT:-}
+      TWILIO_ACCOUNT_SID: ${TWILIO_ACCOUNT_SID:-}
+      TWILIO_AUTH_TOKEN: ${TWILIO_AUTH_TOKEN:-}
+      TWILIO_FROM: ${TWILIO_FROM:-}
+      ALERT_SMS_TO: ${ALERT_SMS_TO:-}
+      GMAIL_USER: ${GMAIL_USER:-}
+      GMAIL_APP_PASSWORD: ${GMAIL_APP_PASSWORD:-}
+      ALERT_EMAIL_TO: ${ALERT_EMAIL_TO:-}
+      PUBLIC_BASE_URL: ${PUBLIC_BASE_URL:-}
+      APP_SECRET: ${APP_SECRET:-}
+    volumes:
+      - tradeagent-data:/data
+    networks:
+      - traefik-proxy
+    healthcheck:
+      test: ["CMD", "python", "-c", "import urllib.request;urllib.request.urlopen('http://127.0.0.1:8000/health',timeout=5)"]
+      interval: 60s
+      timeout: 10s
+      retries: 3
+    labels:
+      - traefik.enable=true
+      - traefik.docker.network=traefik-proxy
+      - traefik.http.services.tradeagent.loadbalancer.server.port=8000
+      - traefik.http.middlewares.tradeagent-strip.stripprefix.prefixes=/trader
+      - traefik.http.middlewares.tradeagent-slash.redirectregex.regex=^https://([^/]+)/trader$$
+      - traefik.http.middlewares.tradeagent-slash.redirectregex.replacement=https://$${1}/trader/
+      - traefik.http.middlewares.tradeagent-rl.ratelimit.average=20
+      - traefik.http.middlewares.tradeagent-rl.ratelimit.period=1m
+      - traefik.http.middlewares.tradeagent-rl.ratelimit.burst=10
+      - traefik.http.routers.tradeagent.rule=(Host(`nichsoft.io`) || Host(`www.nichsoft.io`)) && (Path(`/trader`) || PathPrefix(`/trader/`))
+      - traefik.http.routers.tradeagent.entrypoints=websecure
+      - traefik.http.routers.tradeagent.tls.certresolver=letsencrypt
+      - traefik.http.routers.tradeagent.priority=105
+      - traefik.http.routers.tradeagent.middlewares=shared-auth@docker,tradeagent-slash,tradeagent-strip
+      - traefik.http.routers.tradeagent.service=tradeagent
+      - traefik.http.routers.tradeagent-approve.rule=(Host(`nichsoft.io`) || Host(`www.nichsoft.io`)) && PathPrefix(`/trader/p/`)
+      - traefik.http.routers.tradeagent-approve.entrypoints=websecure
+      - traefik.http.routers.tradeagent-approve.tls.certresolver=letsencrypt
+      - traefik.http.routers.tradeagent-approve.priority=130
+      - traefik.http.routers.tradeagent-approve.middlewares=tradeagent-rl,tradeagent-strip
+      - traefik.http.routers.tradeagent-approve.service=tradeagent
+volumes:
+  tradeagent-data:
+networks:
+  traefik-proxy:
+    external: true
+    name: traefik-proxy
