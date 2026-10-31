@@ -707,6 +707,19 @@ def test_portfolio_shows_price_and_sparkline(eng, monkeypatch):
     sparks = markets.holding_sparks(EC(), [1, 2])
     assert sparks[1] == [40, 45, 60] and sparks[2] == []
     html = web.portfolio_card(book, web.store.get_settings(), sparks)
+    html = web.portfolio_card(book, web.store.get_settings(), sparks, {"AAA": True, "BBB": False})
+    assert "<b>AAA</b> <span class='pill okp' title='Market is open'>open</span>" in html
+    assert "<b>BBB</b> <span class=pill title='Market is closed" in html
+    assert "market is" not in web.portfolio_card(book, web.store.get_settings(), sparks, {}).lower().replace("market is open", "").replace("market is closed", "")  # unknown: no badge
+    assert ">open<" not in web.portfolio_card(book, web.store.get_settings(), sparks, {})
+    from datetime import datetime, timezone
+    class MC:
+        def search_item(self, sym):
+            return {"internalInstrumentId": 1 if sym == "AAA" else 2, "internalAssetClassName": "Stocks" if sym == "AAA" else "Cryptocurrencies"}
+        def daily_candles(self, iid, count=365):
+            return []
+    sat = datetime(2026, 10, 31, 15, 0, tzinfo=timezone.utc)
+    assert markets.market_states(MC(), ["AAA", "BBB"], sat) == {"AAA": False, "BBB": True}   # US stock shut Saturday, crypto open
     assert "<th>Price" in html and "<th>30 days</th>" in html
     assert html.index("<th>Units</th>") < html.index("<th>Value</th>")          # Units sits next to Value
     assert html.index("<th>Value</th>") - html.index("<th>Units</th>") < 30

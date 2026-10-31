@@ -181,22 +181,39 @@ def holding_sparks(ec, instrument_ids: list[int]) -> dict[int, list[float]]:
         return dict(pool.map(one, instrument_ids))
 
 
+def _quote(ec, sym: str):
+    """Cached (instrument_id, search item, candles) for a symbol, or the Exception if it failed."""
+    def load():
+        global _updated
+        try:
+            res = _fetch_one(ec, sym)
+            _updated = time.time()
+            return res
+        except Exception as e:  # noqa: BLE001
+            return e
+    with _lock:
+        hit = _cache.get(("quote", sym))
+    if hit and _settled(sym, hit):
+        return hit[1]
+    return _cached(("quote", sym), QUOTE_TTL, load)
+
+
+def market_states(ec, symbols: list[str], now: datetime | None = None) -> dict[str, bool | None]:
+    """symbol -> True open / False closed / None unknown, for the portfolio card."""
+    if not symbols:
+        return {}
+    with ThreadPoolExecutor(max_workers=min(6, len(symbols))) as pool:
+        got = list(pool.map(lambda s: _quote(ec, s), symbols))
+    out: dict[str, bool | None] = {}
+    for sym, f in zip(symbols, got):
+        out[sym] = None if isinstance(f, Exception) else session(sym, f[1].get("internalAssetClassName"), now)[0]
+    return out
+
+
 def watchlist_rows(ec, symbols: list[str]) -> list[dict]:
     """One row per symbol. A symbol that fails shows an error row instead of breaking the page."""
     def one(sym):
-        def load():
-            global _updated
-            try:
-                res = _fetch_one(ec, sym)
-                _updated = time.time()
-                return res
-            except Exception as e:  # noqa: BLE001
-                return e
-        with _lock:
-            hit = _cache.get(("quote", sym))
-        if hit and _settled(sym, hit):
-            return hit[1]
-        return _cached(("quote", sym), QUOTE_TTL, load)
+        return _quote(ec, sym)
 
     with ThreadPoolExecutor(max_workers=min(6, max(1, len(symbols)))) as pool:
         fetched = list(pool.map(one, symbols))
