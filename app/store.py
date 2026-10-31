@@ -55,13 +55,16 @@ def init() -> None:
             CREATE TABLE IF NOT EXISTS proposals (
                 id INTEGER PRIMARY KEY AUTOINCREMENT, run_id INTEGER, ticker TEXT, instrument_id INTEGER,
                 action TEXT, amount_usd REAL, units REAL, position_ids TEXT, rating TEXT, reason TEXT,
-                status TEXT, mode TEXT, created TEXT, decided TEXT, executed TEXT, order_ref TEXT, error TEXT);
+                status TEXT, mode TEXT, created TEXT, decided TEXT, executed TEXT, order_ref TEXT, error TEXT,
+                override INTEGER DEFAULT 0);
             CREATE TABLE IF NOT EXISTS secrets (key TEXT PRIMARY KEY, value TEXT, updated TEXT);
             CREATE TABLE IF NOT EXISTS events (id INTEGER PRIMARY KEY AUTOINCREMENT, ts TEXT, level TEXT, msg TEXT);
             CREATE TABLE IF NOT EXISTS scans (
                 id INTEGER PRIMARY KEY AUTOINCREMENT, started TEXT, finished TEXT, items TEXT, error TEXT);
             """
         )
+        if "override" not in [r["name"] for r in c.execute("PRAGMA table_info(proposals)")]:
+            c.execute("ALTER TABLE proposals ADD COLUMN override INTEGER DEFAULT 0")   # existing databases
         for k, v in DEFAULTS.items():
             c.execute("INSERT OR IGNORE INTO settings(key, value) VALUES (?, ?)", (k, v))
 

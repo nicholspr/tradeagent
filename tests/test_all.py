@@ -658,7 +658,8 @@ def test_manual_execute_from_run_page(eng, monkeypatch):
         store.set_setting("kill_switch", "on")                                     # limits still apply
         c.post(f"/run/{run_id}/execute/{pid}", follow_redirects=False)
         assert not orders(fs) and store.get_proposal(pid)["status"] == "blocked"
-        assert "can&#39;t be executed" in c.get(f"/run/{run_id}").text or "can't be executed" in c.get(f"/run/{run_id}").text
+        pg = c.get(f"/run/{run_id}").text
+        assert "Blocked by the kill switch" in pg and "/override/" not in pg      # the kill switch can't be overridden
         store.set_setting("kill_switch", "off")
 
     store.update_proposal(pid, status="signal", error=None)                        # reopen it with the kill switch off
@@ -731,6 +732,64 @@ def test_preflight_explains_blocks_and_fixes(eng, monkeypatch):
         home = c.get("/").text
         assert "Check and analyse" in home and "action='/preflight'" in home.replace(web.B, "")
     assert len(orders(fs)) == 1
+
+
+def test_override_blocked_trade(eng, monkeypatch):
+    engine, store, sent, fs, rating = eng
+    from fastapi.testclient import TestClient
+    from app import web
+    importlib.reload(web)
+    monkeypatch.setattr(web.sched, "start", lambda: None)
+    item = policy.WatchItem("META", "META")
+    first = engine.analyse(item)["pending"]
+    assert engine.decide(first, approve=True)["executed"] and len(orders(fs)) == 1
+    out = engine.analyse(item)                                     # same day: the cooldown blocks it
+    pid = out["proposal"]
+    run_id = store.get_proposal(pid)["run_id"]
+    assert store.get_proposal(pid)["status"] == "blocked" and len(orders(fs)) == 1
+
+    with TestClient(web.app) as c:
+        page = c.get(f"/run/{run_id}").text
+        assert f"/run/{run_id}/override/{pid}" in page and "Override limits and execute" in page and "confirm(" in page
+        assert "cooldown" in page and "OVERRIDE your limits" in page
+        assert c.get(f"/run/{run_id}/override/{pid}").status_code == 405           # never from a plain link
+        assert c.post(f"/run/{run_id + 99}/override/{pid}").status_code == 404
+        assert len(orders(fs)) == 1
+
+        store.set_setting("kill_switch", "on")                                     # never waived
+        c.post(f"/run/{run_id}/override/{pid}")
+        assert len(orders(fs)) == 1 and store.get_proposal(pid)["status"] == "blocked"
+        store.set_setting("kill_switch", "off")
+
+        r = c.post(f"/run/{run_id}/override/{pid}", follow_redirects=False)
+        assert r.status_code == 303 and len(orders(fs)) == 2
+        p = store.get_proposal(pid)
+        assert p["status"] == "executed" and p["override"] == 1
+        c.post(f"/run/{run_id}/override/{pid}")                                    # double click: no third order
+        assert len(orders(fs)) == 2
+    log = " ".join(e["msg"] for e in store.events(80, level="audit"))
+    assert "LIMITS OVERRIDDEN by user" in log and "waived: cooldown" in log
+    # the waiver covered that one trade only
+    assert "blocked" in engine.analyse(item)
+
+
+def test_override_never_waives_hard_limits(eng):
+    engine, store, sent, fs, rating = eng
+    from app import policy as pol
+    base = dict(instrument_id=1, cash=500.0, portfolio_total=1000.0, holding_value=0.0, pending_usd=0.0,
+                spent_today=999.0, trades_today=99, last_trade_iso=datetime.now(timezone.utc).isoformat(), tradable=True)
+    s = store.get_settings()
+    buy = pol.Proposal("buy", 25.0, None, [], "x")
+    assert pol.check_limits(buy, s=s, **base)[0] is None                           # blocked without the waiver
+    ok, blocks = pol.check_limits(buy, s=s, override=True, **base)
+    assert ok and ok.amount_usd == 25.0 and not blocks                             # soft limits waived, size still capped
+    big = pol.Proposal("buy", 900.0, None, [], "x")
+    assert pol.check_limits(big, s=s, override=True, **base)[0].amount_usd == 25.0   # per-trade maximum still applies
+    low = {**base, "cash": 12.0}
+    assert pol.check_limits(buy, s=s, override=True, **low)[0].amount_usd == 12.0    # never more than the cash held
+    assert pol.check_limits(buy, s=s, override=True, **{**base, "cash": 4.0})[0] is None   # $10 minimum
+    assert pol.check_limits(buy, s={**s, "kill_switch": "on"}, override=True, **base)[0] is None
+    assert pol.check_limits(buy, s=s, override=True, **{**base, "tradable": False})[0] is None
 
 
 def test_portfolio_has_live_clock(eng, monkeypatch):

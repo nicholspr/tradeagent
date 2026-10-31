@@ -71,29 +71,36 @@ def propose(rating: str, *, holding_value: float, holding_positions: list, pendi
 def check_limits(p: Proposal, *, instrument_id: int, cash: float, portfolio_total: float,
                  holding_value: float, pending_usd: float, spent_today: float, trades_today: int,
                  last_trade_iso: str | None, tradable: bool, s: dict,
-                 now: datetime | None = None) -> tuple[Proposal | None, list[str]]:
-    """Apply hard limits. Returns (possibly resized proposal, []) or (None, [reasons blocked])."""
+                 now: datetime | None = None, override: bool = False) -> tuple[Proposal | None, list[str]]:
+    """Apply hard limits. Returns (possibly resized proposal, []) or (None, [reasons blocked]).
+
+    override=True is a deliberate, per-trade waiver by the user of the soft limits only: daily trade count, cooldown,
+    daily buy spend, position cap and the cash buffer. It never waives the kill switch, the market being closed, the
+    per-trade maximum, the $10 minimum, or the cash actually in the account.
+    """
     now = now or datetime.now(timezone.utc)
     blocks = []
     if p.action == "none":
         return None, [p.reason]
     if s.get("kill_switch") == "on":
         blocks.append("kill switch is on")
-    if trades_today >= int(_f(s, "max_trades_per_day")):
-        blocks.append(f"daily trade limit reached ({trades_today})")
-    if last_trade_iso:
-        last = datetime.fromisoformat(last_trade_iso)
-        if now - last < timedelta(days=_f(s, "cooldown_days")):
-            blocks.append(f"cooldown: traded this instrument on {last.date()}")
+    if not override:
+        if trades_today >= int(_f(s, "max_trades_per_day")):
+            blocks.append(f"daily trade limit reached ({trades_today})")
+        if last_trade_iso:
+            last = datetime.fromisoformat(last_trade_iso)
+            if now - last < timedelta(days=_f(s, "cooldown_days")):
+                blocks.append(f"cooldown: traded this instrument on {last.date()}")
     if not tradable:
         blocks.append("market closed or instrument not tradable now")
 
     if p.action == "buy":
         amount = p.amount_usd
-        room_cash = cash - _f(s, "cash_buffer_usd")
-        room_day = _f(s, "max_daily_usd") - spent_today
+        inf = float("inf")
+        room_cash = cash - (0.0 if override else _f(s, "cash_buffer_usd"))
+        room_day = inf if override else _f(s, "max_daily_usd") - spent_today
         cap_pos = portfolio_total * _f(s, "max_position_pct") / 100.0
-        room_pos = cap_pos - (holding_value + pending_usd)
+        room_pos = inf if override else cap_pos - (holding_value + pending_usd)
         amount = min(amount, _f(s, "max_trade_usd"), room_cash, room_day, room_pos)
         amount = round(max(0.0, amount), 2)
         if amount < MIN_ORDER_USD:

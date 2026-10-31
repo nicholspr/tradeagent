@@ -232,7 +232,7 @@ def preflight(item: policy.WatchItem) -> dict:
     return out
 
 
-def _limits(prop, inst, book, s, *, tradable: bool):
+def _limits(prop, inst, book, s, *, tradable: bool, override: bool = False):
     h = book.holdings.get(inst["instrumentId"])
     since = _tracking_start_iso()
     spent = sum(p["amount_usd"] or 0 for p in store.executed_since(since) if p["action"] == "buy")
@@ -241,7 +241,7 @@ def _limits(prop, inst, book, s, *, tradable: bool):
         prop, instrument_id=inst["instrumentId"], cash=book.cash_usd, portfolio_total=book.total_usd,
         holding_value=h.value_usd if h else 0.0, pending_usd=h.pending_usd if h else 0.0,
         spent_today=spent, trades_today=trades, last_trade_iso=store.last_executed_for(inst["instrumentId"]),
-        tradable=tradable, s=s)
+        tradable=tradable, s=s, override=override)
 
 
 def create_test(symbol: str, action: str) -> dict:
@@ -302,6 +302,32 @@ def manual_execute(pid: int, actor: str = "") -> dict:
     return execute(pid)
 
 
+def override_execute(pid: int, actor: str = "") -> dict:
+    """Place a trade that your limits blocked, on the user's explicit say-so, waiving the soft limits for this trade only.
+
+    The kill switch, a closed market, the per-trade maximum, the $10 minimum and the cash actually available still apply,
+    and execute() re-checks them. The waiver is stored on the proposal, so it covers only this one trade.
+    """
+    who = actor or "user"
+    with _manual_lock:
+        p = store.get_proposal(pid)
+        if not p:
+            return {"error": "not found"}
+        if p["status"] != "blocked" or p["action"] == "none":
+            return {"error": "not overridable", "status": p["status"]}
+        if _utc_now() - datetime.fromisoformat(p["created"]) > SIGNAL_MAX_AGE:
+            audit(pid, "override refused", "blocked trade is older than 24h; run a new analysis")
+            return {"error": "stale", "status": p["status"]}
+        if store.get_settings().get("kill_switch") == "on":
+            audit(pid, "override refused", "kill switch is on")
+            return {"error": "kill switch", "status": p["status"]}
+        waived = p.get("error") or p.get("reason") or "limits"
+        store.update_proposal(pid, status="approved", decided=_utc_now().isoformat(timespec="seconds"),
+                              override=1, error=None)
+        audit(pid, "LIMITS OVERRIDDEN by user", f"by {who}; waived: {waived}")
+    return execute(pid)
+
+
 def cancel(pid: int, actor: str = "") -> dict:
     """Cancel an approved trade that is still queued (e.g. waiting for the market to open)."""
     with _exec_lock:   # same lock as execute(), so a trade can't be placed and cancelled at once
@@ -343,9 +369,9 @@ def execute(pid: int) -> dict:
             prop.position_ids = [i for i in p["position_ids"] if i in live]
             if not prop.position_ids:
                 return _fail(pid, "positions no longer open")
-        sized, blocks = _limits(prop, inst, book, s, tradable=True)
+        sized, blocks = _limits(prop, inst, book, s, tradable=True, override=bool(p.get("override")))
         if sized is None:
-            store.update_proposal(pid, status="blocked", error="; ".join(blocks))
+            store.update_proposal(pid, status="blocked", error="; ".join(blocks), override=0)
             audit(pid, "blocked at execution")
             notify.both("Trade blocked", f"TradeAgent: {_describe(p)} blocked at execution: {'; '.join(blocks)}",
                         f"{_describe(p)} blocked at execution:\n" + "\n".join(blocks))

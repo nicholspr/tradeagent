@@ -902,7 +902,16 @@ def audit_csv():
 def run_trade_actions(run_id: int, p: dict) -> str:
     """Manual controls under a suggested trade: execute a signal, or approve/reject a pending one."""
     if p["status"] == "blocked" and p["action"] != "none":
-        return "<p class=muted>Blocked by your limits, so it can't be executed from here. Change the limit in Settings and analyse again.</p>"
+        why = p.get("error") or p.get("reason") or ""
+        if "kill switch" in why:
+            return "<p class=muted>Blocked by the kill switch. Turn it off in Settings first; it can't be overridden from here.</p>"
+        live = "TEST MODE: nothing will be sent to eToro" if config.DRY_RUN else f"This places a real order on your {config.ETORO_ENV.upper()} eToro account"
+        ask = esc(f"OVERRIDE your limits for this one trade? {engine._describe(p)}. Waived: {why}. {live}. "
+                  f"The kill switch, closed markets, the per-trade maximum and your actual cash still apply.").replace("'", "&#39;")
+        return (f"<p class=muted>Blocked by your limits. You can override them for this one trade.</p>"
+                f"<div class=row style='margin:4px 0 10px'><form method=post action='{B}/run/{run_id}/override/{p['id']}' "
+                f"style='display:inline' onsubmit=\"return confirm('{ask}')\">"
+                f"<button class=red>Override limits and execute: {esc(engine._describe(p))}</button></form></div>")
     if p["status"] not in ("signal", "pending") or p["action"] == "none":
         return ""
     live = "TEST MODE: nothing will be sent to eToro" if config.DRY_RUN else f"This places a real order on your {config.ETORO_ENV.upper()} eToro account"
@@ -925,6 +934,18 @@ def run_execute(run_id: int, pid: int, request: Request):
     res = engine.manual_execute(pid, actor=f"dashboard from {ip or 'unknown IP'}")
     if res.get("error"):
         store.log("warn", f"manual execute of proposal #{pid} refused: {res['error']} (status {res.get('status')})")
+    return back(f"/run/{run_id}")
+
+
+@app.post("/run/{run_id}/override/{pid}")
+def run_override(run_id: int, pid: int, request: Request):
+    p = store.get_proposal(pid)
+    if not p or p["run_id"] != run_id:
+        raise HTTPException(404)
+    ip = (request.headers.get("x-forwarded-for") or (request.client.host if request.client else "")).split(",")[0].strip()
+    res = engine.override_execute(pid, actor=f"dashboard from {ip or 'unknown IP'}")
+    if res.get("error"):
+        store.log("warn", f"override of proposal #{pid} refused: {res['error']} (status {res.get('status')})")
     return back(f"/run/{run_id}")
 
 
