@@ -530,8 +530,24 @@ def test_watchlist_market_rows_and_card(eng, monkeypatch):
     monkeypatch.setattr(markets, "_cache", {})
     with TestClient(web.app) as c:
         page = c.get("/").text
-        assert "Change 1D" in page and "52W range" in page and "Sentiment" in page and "Short" in page
         assert not orders(fs)
+
+    # ordered by 1-day change, best first; failed symbols last
+    changes = {"LOW": -3.0, "HIGH": 4.0, "MID": 1.0}
+
+    class EC2(EC):
+        def search_item(self, sym):
+            if sym == "BAD":
+                raise RuntimeError("x")
+            return {**item, "internalInstrumentId": 9, "internalInstrumentDisplayName": sym, "dailyPriceChange": changes[sym]}
+    monkeypatch.setattr(markets, "_cache", {})
+    monkeypatch.setattr(web.engine, "client", lambda: EC2())
+    base_settings = store.get_settings()
+    monkeypatch.setattr(web.store, "get_settings", lambda: {**base_settings, "watchlist": "LOW,BAD,HIGH,MID"})
+    with TestClient(web.app) as c:
+        page = c.get("/").text
+        i = [page.index(f"<b>{s}</b>") for s in ("HIGH", "MID", "LOW", "BAD")]
+        assert i == sorted(i)
 
 
 def test_pages_layout_logs_control_and_portfolio(eng, monkeypatch):
@@ -725,6 +741,15 @@ def test_portfolio_shows_price_and_sparkline(eng, monkeypatch):
     sat = datetime(2026, 10, 31, 15, 0, tzinfo=timezone.utc)
     assert markets.market_states(MC(), ["AAA", "BBB"], sat) == {"AAA": False, "BBB": True}   # US stock shut Saturday, crypto open
     assert "<th>Price" in html and "<th>30 days</th>" in html
+    # ordered by gain vs cost, highest first; no cost basis last
+    mix = Book(cash_usd=0.0, total_usd=1000.0, holdings={
+        1: Holding(1, "LOSE", units=1, value_usd=80.0, positions=[{"units": 1, "openRate": 100.0, "conv": 1.0}]),
+        2: Holding(2, "NOCOST", units=1, value_usd=900.0),
+        3: Holding(3, "WIN", units=1, value_usd=150.0, positions=[{"units": 1, "openRate": 100.0, "conv": 1.0}]),
+        4: Holding(4, "FLAT", units=1, value_usd=100.0, positions=[{"units": 1, "openRate": 100.0, "conv": 1.0}])})
+    order = web.portfolio_card(mix, web.store.get_settings())
+    pos = [order.index(f"<b>{s}</b>") for s in ("WIN", "FLAT", "LOSE", "NOCOST")]
+    assert pos == sorted(pos)
     assert html.index("<th>Units</th>") < html.index("<th>Value</th>")          # Units sits next to Value
     assert html.index("<th>Value</th>") - html.index("<th>Units</th>") < 30
     assert "▲ +$100.00 (+25.00%)" in html                                        # 500 now vs 10 x 40 paid

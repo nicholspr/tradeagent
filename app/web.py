@@ -350,6 +350,7 @@ def markets_card(s: dict) -> str:
     head = ("<tr><th>Markets</th><th>Change 1D</th><th></th><th>Short</th><th>Buy</th><th>52W range</th><th>Sentiment</th></tr>")
     ts = markets.updated_at()
     stamp = (datetime.fromtimestamp(ts, config_tz()).strftime("%H:%M") if ts else "just now")
+    rows = sorted(rows, key=lambda r: (r.get("change_pct") is None, -(r.get("change_pct") or 0)))   # best 1-day change first, no data last
     return (table("".join(market_row(r) for r in rows), head)
             + f"<form method=post action='{B}/watchlist/refresh' class=row style='margin-top:10px'>"
               f"<span class=muted>Updated {stamp} · refreshes from eToro every {markets.REFRESH_MINUTES} minutes while markets are open</span>"
@@ -370,7 +371,12 @@ def portfolio_card(book, s: dict, sparks: dict | None = None, info: dict | None 
         today = datetime.now(config_tz()).date()
         when = dt.strftime("%H:%M:%S") if dt.date() == today else dt.strftime("%a %H:%M")
         when_title = dt.strftime("%Y-%m-%d %H:%M:%S %Z")
-    holdings = sorted(book.holdings.values(), key=lambda h: -h.value_usd)
+    def gain_pct(h):
+        cost = h.cost_usd
+        return (h.value_usd - cost) / cost * 100 if cost and h.units > 0 else None
+
+    # highest gain first; holdings with no cost basis last (by value)
+    holdings = sorted(book.holdings.values(), key=lambda h: (gain_pct(h) is None, -(gain_pct(h) or 0), -h.value_usd))
     rows, warns = "", []
     for h in holdings:
         share = h.value_usd / total * 100 if total else 0
