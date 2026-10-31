@@ -637,6 +637,59 @@ def test_reset_daily_limits(eng, monkeypatch):
     assert "cooldown" in str(engine.analyse(policy.WatchItem("META", "META")))   # cooldown is not reset
 
 
+def test_manual_execute_from_run_page(eng, monkeypatch):
+    engine, store, sent, fs, rating = eng
+    from fastapi.testclient import TestClient
+    from app import web
+    importlib.reload(web)
+    monkeypatch.setattr(web.sched, "start", lambda: None)
+    store.set_setting("mode", "signals")
+    out = engine.analyse(policy.WatchItem("META", "META"))
+    pid = out["signal"]
+    run_id = store.get_proposal(pid)["run_id"]
+    assert not orders(fs)                                         # a signal never trades by itself
+
+    with TestClient(web.app) as c:
+        page = c.get(f"/run/{run_id}").text
+        assert f"/run/{run_id}/execute/{pid}" in page and "Execute this trade" in page and "confirm(" in page
+        assert c.get(f"/run/{run_id}/execute/{pid}").status_code == 405           # never from a plain link
+        assert c.post(f"/run/{run_id + 99}/execute/{pid}").status_code == 404     # proposal must belong to the run
+        assert not orders(fs)
+        store.set_setting("kill_switch", "on")                                     # limits still apply
+        c.post(f"/run/{run_id}/execute/{pid}", follow_redirects=False)
+        assert not orders(fs) and store.get_proposal(pid)["status"] == "blocked"
+        assert "can&#39;t be executed" in c.get(f"/run/{run_id}").text or "can't be executed" in c.get(f"/run/{run_id}").text
+        store.set_setting("kill_switch", "off")
+
+    store.update_proposal(pid, status="signal", error=None)                        # reopen it with the kill switch off
+    with TestClient(web.app) as c:
+        r = c.post(f"/run/{run_id}/execute/{pid}", follow_redirects=False)
+        assert r.status_code == 303
+        assert len(orders(fs)) == 1 and store.get_proposal(pid)["status"] == "executed"
+        c.post(f"/run/{run_id}/execute/{pid}")                                     # double click: no second order
+        assert len(orders(fs)) == 1
+    assert any("manually approved from signal" in e["msg"] for e in store.events(50, level="audit"))
+
+
+def test_manual_execute_refuses_stale_and_none(eng):
+    engine, store, sent, fs, rating = eng
+    store.set_setting("mode", "signals")
+    pid = engine.analyse(policy.WatchItem("META", "META"))["signal"]
+    store.update_proposal(pid, created=(datetime.now(timezone.utc) - timedelta(hours=25)).isoformat(timespec="seconds"))
+    assert engine.manual_execute(pid)["error"] == "stale" and not orders(fs)
+    assert engine.manual_execute(9999)["error"] == "not found"
+    rating["v"] = "Hold"
+    assert "action" in engine.analyse(policy.WatchItem("META", "META"))             # Hold creates no proposal to execute
+
+
+def test_manual_execute_approves_pending(eng):
+    engine, store, sent, fs, rating = eng
+    pid = engine.analyse(policy.WatchItem("META", "META"))["pending"]
+    assert not orders(fs)
+    assert engine.manual_execute(pid, "dashboard")["executed"] and len(orders(fs)) == 1
+    assert engine.manual_execute(pid)["error"] == "not executable"                  # already done
+
+
 def test_portfolio_has_live_clock(eng, monkeypatch):
     engine, store, sent, fs, rating = eng
     from fastapi.testclient import TestClient

@@ -857,6 +857,44 @@ def audit_csv():
                     headers={"Content-Disposition": "attachment; filename=tradeagent-audit.csv"})
 
 
+def run_trade_actions(run_id: int, p: dict) -> str:
+    """Manual controls under a suggested trade: execute a signal, or approve/reject a pending one."""
+    if p["status"] == "blocked" and p["action"] != "none":
+        return "<p class=muted>Blocked by your limits, so it can't be executed from here. Change the limit in Settings and analyse again.</p>"
+    if p["status"] not in ("signal", "pending") or p["action"] == "none":
+        return ""
+    live = "TEST MODE: nothing will be sent to eToro" if config.DRY_RUN else f"This places a real order on your {config.ETORO_ENV.upper()} eToro account"
+    ask = esc(f"{engine._describe(p)}. {live}. Every limit is re-checked first. Continue?").replace("'", "&#39;")
+    label = "Approve and execute" if p["status"] == "pending" else "Execute this trade"
+    out = (f"<form method=post action='{B}/run/{run_id}/execute/{p['id']}' style='display:inline' "
+           f"onsubmit=\"return confirm('{ask}')\"><button>{label}: {esc(engine._describe(p))}</button></form>")
+    if p["status"] == "pending":
+        out += (f" <form method=post action='{B}/run/{run_id}/reject/{p['id']}' style='display:inline'>"
+                f"<button class=sec>Reject</button></form>")
+    return f"<div class=row style='margin:4px 0 10px'>{out}</div>"
+
+
+@app.post("/run/{run_id}/execute/{pid}")
+def run_execute(run_id: int, pid: int, request: Request):
+    p = store.get_proposal(pid)
+    if not p or p["run_id"] != run_id:
+        raise HTTPException(404)
+    ip = (request.headers.get("x-forwarded-for") or (request.client.host if request.client else "")).split(",")[0].strip()
+    res = engine.manual_execute(pid, actor=f"dashboard from {ip or 'unknown IP'}")
+    if res.get("error"):
+        store.log("warn", f"manual execute of proposal #{pid} refused: {res['error']} (status {res.get('status')})")
+    return back(f"/run/{run_id}")
+
+
+@app.post("/run/{run_id}/reject/{pid}")
+def run_reject(run_id: int, pid: int):
+    p = store.get_proposal(pid)
+    if not p or p["run_id"] != run_id:
+        raise HTTPException(404)
+    engine.decide(pid, approve=False, actor="dashboard")
+    return back(f"/run/{run_id}")
+
+
 @app.get("/run/{run_id}", response_class=HTMLResponse)
 def show_run(run_id: int):
     r = store.get_run(run_id)
@@ -866,6 +904,7 @@ def show_run(run_id: int):
     if props:
         trade = "".join(f"<p><b>{esc(engine._describe(p)) if p['action'] != 'none' else 'No trade'}</b> "
                         f"{status_pill(p['status'])} <span class=muted>{esc((p['error'] or p['reason'] or '')[:200])}</span></p>"
+                        f"{run_trade_actions(run_id, p)}"
                         for p in props)
     elif r["finished"] and not r["error"]:
         trade = "<p class=muted>No trade proposed (see the decision below).</p>"

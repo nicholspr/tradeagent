@@ -10,6 +10,8 @@ from .etoro import EtoroClient, EtoroError
 
 _run_lock = threading.Lock()          # one analysis at a time (LLM cost + rate limits)
 _exec_lock = threading.Lock()         # one order at a time
+_manual_lock = threading.Lock()       # makes "signal -> approved" a single step, so a double click can't queue two orders
+SIGNAL_MAX_AGE = timedelta(hours=24)  # an older signal is stale: analyse again instead
 
 
 def client() -> EtoroClient:
@@ -214,6 +216,31 @@ def decide(pid: int, approve: bool, actor: str = "") -> dict:
         return {"status": "rejected"}
     store.update_proposal(pid, status="approved", decided=now)
     audit(pid, "approved", f"by {actor or 'user'}")
+    return execute(pid)
+
+
+def manual_execute(pid: int, actor: str = "") -> dict:
+    """Place a trade the agent suggested, on the user's explicit say-so from the run page.
+
+    Only a pending approval or a signals-mode signal can be started. Blocked trades cannot be forced through, and
+    execute() re-checks every limit (kill switch, caps, cooldown, market open) before anything is sent.
+    """
+    who = actor or "user"
+    with _manual_lock:
+        p = store.get_proposal(pid)
+        if not p:
+            return {"error": "not found"}
+        if p["status"] == "pending":
+            return decide(pid, approve=True, actor=f"{who} (manual execute)")
+        if p["status"] != "signal":
+            return {"error": "not executable", "status": p["status"]}
+        if p["action"] == "none":
+            return {"error": "nothing to execute", "status": p["status"]}
+        if _utc_now() - datetime.fromisoformat(p["created"]) > SIGNAL_MAX_AGE:
+            audit(pid, "manual execute refused", "signal is older than 24h; run a new analysis")
+            return {"error": "stale", "status": p["status"]}
+        store.update_proposal(pid, status="approved", decided=_utc_now().isoformat(timespec="seconds"))
+        audit(pid, "manually approved from signal", f"by {who}")
     return execute(pid)
 
 
