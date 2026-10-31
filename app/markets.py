@@ -4,6 +4,9 @@ Display only. Nothing here can place or change an order.
 """
 import threading
 import time
+from datetime import datetime, timedelta, timezone
+from datetime import time as dtime
+from zoneinfo import ZoneInfo
 from concurrent.futures import ThreadPoolExecutor
 
 REFRESH_MINUTES = 15
@@ -20,10 +23,75 @@ def updated_at() -> float | None:
     return _updated
 
 
-def invalidate() -> None:
-    """Drop cached quotes and rates (not the daily history) so the next read goes to eToro."""
+# Regular trading sessions by listing suffix: (timezone, open, close). No suffix = US listing.
+# Lunch breaks and exchange holidays are not modelled; a holiday just costs a harmless refetch.
+_SESSIONS = {
+    "": ("America/New_York", dtime(9, 30), dtime(16, 0)),
+    "L": ("Europe/London", dtime(8, 0), dtime(16, 30)),
+    "DE": ("Europe/Berlin", dtime(9, 0), dtime(17, 30)),
+    "PA": ("Europe/Paris", dtime(9, 0), dtime(17, 30)),
+    "AS": ("Europe/Amsterdam", dtime(9, 0), dtime(17, 30)),
+    "MC": ("Europe/Madrid", dtime(9, 0), dtime(17, 30)),
+    "MI": ("Europe/Rome", dtime(9, 0), dtime(17, 30)),
+    "ZU": ("Europe/Zurich", dtime(9, 0), dtime(17, 30)),
+    "ST": ("Europe/Stockholm", dtime(9, 0), dtime(17, 30)),
+    "CO": ("Europe/Copenhagen", dtime(9, 0), dtime(17, 0)),
+    "HE": ("Europe/Helsinki", dtime(10, 0), dtime(18, 30)),
+    "OL": ("Europe/Oslo", dtime(9, 0), dtime(16, 20)),
+    "HK": ("Asia/Hong_Kong", dtime(9, 30), dtime(16, 0)),
+    "TO": ("America/Toronto", dtime(9, 30), dtime(16, 0)),
+}
+_ALWAYS = ("crypto",)
+_FX_LIKE = ("currenc", "commodit", "indic")   # trade around the clock on weekdays
+
+
+def session(symbol: str, asset_class: str | None, now: datetime | None = None) -> tuple[bool, datetime | None]:
+    """(is_open, most_recent_close). Unknown markets count as open so they are never skipped by mistake."""
+    now = (now or datetime.now(timezone.utc)).astimezone(timezone.utc)
+    cls = (asset_class or "").lower()
+    if cls.startswith(_ALWAYS):
+        return True, None
+    if cls.startswith(_FX_LIKE):                       # Sun 22:00 UTC to Fri 22:00 UTC
+        wd, t = now.weekday(), now.time()
+        closed = wd == 5 or (wd == 4 and t >= dtime(22)) or (wd == 6 and t < dtime(22))
+        if not closed:
+            return True, None
+        days_back = (wd - 4) % 7
+        return False, datetime.combine(now.date() - timedelta(days=days_back), dtime(22), tzinfo=timezone.utc)
+    suffix = symbol.rsplit(".", 1)[1].upper() if "." in symbol else ""
+    if suffix not in _SESSIONS:
+        return True, None
+    tz_name, opens, closes = _SESSIONS[suffix]
+    tz = ZoneInfo(tz_name)
+    local = now.astimezone(tz)
+    if local.weekday() < 5 and opens <= local.time() < closes:
+        return True, None
+    for i in range(8):
+        day = local.date() - timedelta(days=i)
+        close = datetime.combine(day, closes, tzinfo=tz)
+        if day.weekday() < 5 and close <= now:
+            return False, close
+    return False, None
+
+
+def _settled(sym: str, entry) -> bool:
+    """True when the market is closed and the cached data was read after the last close: nothing can have changed."""
+    ts, val = entry
+    if isinstance(val, Exception):
+        return False
+    is_open, last_close = session(sym, val[1].get("internalAssetClassName"), datetime.fromtimestamp(time.time(), timezone.utc))
+    return not is_open and last_close is not None and ts >= last_close.timestamp()
+
+
+def invalidate(open_only: bool = False) -> None:
+    """Drop cached quotes and rates (not the daily history) so the next read goes to eToro.
+
+    open_only keeps symbols whose market is closed and already captured after its close.
+    """
     with _lock:
         for k in [k for k in _cache if k[0] in ("quote", "rates")]:
+            if open_only and k[0] == "quote" and _settled(k[1], _cache[k]):
+                continue
             del _cache[k]
 
 
@@ -110,6 +178,10 @@ def watchlist_rows(ec, symbols: list[str]) -> list[dict]:
                 return res
             except Exception as e:  # noqa: BLE001
                 return e
+        with _lock:
+            hit = _cache.get(("quote", sym))
+        if hit and _settled(sym, hit):
+            return hit[1]
         return _cached(("quote", sym), QUOTE_TTL, load)
 
     with ThreadPoolExecutor(max_workers=min(6, max(1, len(symbols)))) as pool:

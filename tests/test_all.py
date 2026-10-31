@@ -582,7 +582,7 @@ def test_watchlist_refreshes_every_15_minutes(eng, monkeypatch):
         def rates(self, ids):
             return {5: {"bid": 10, "ask": 10.1}}
 
-    ec, clock = EC(), {"t": 1000.0}
+    ec, clock = EC(), {"t": datetime(2026, 10, 29, 15, 0, tzinfo=timezone.utc).timestamp()}   # Thu 11:00 New York, US open
     monkeypatch.setattr(markets.time, "time", lambda: clock["t"])
     markets.watchlist_rows(ec, ["META", "BAD"])
     assert calls["search"] == 2
@@ -617,6 +617,75 @@ def test_watchlist_refreshes_every_15_minutes(eng, monkeypatch):
         c.get("/")
         assert calls["search"] > before                          # manual refresh bypasses the cache
         assert not orders(fs)
+
+
+def test_market_sessions_and_closed_markets_not_refetched(eng, monkeypatch):
+    engine, store, sent, fs, rating = eng
+    from app import markets
+    importlib.reload(markets)
+    utc = lambda *a: datetime(*a, tzinfo=timezone.utc)
+    # US (EDT, UTC-4 until 1 Nov 2026)
+    assert markets.session("META", "Stocks", utc(2026, 10, 29, 14, 0))[0] is True          # 10:00 ET
+    assert markets.session("META", "Stocks", utc(2026, 10, 29, 13, 0))[0] is False         # 09:00 ET, pre-open
+    closed, last = markets.session("META", "Stocks", utc(2026, 10, 29, 21, 0))             # 17:00 ET
+    assert closed is False and last == utc(2026, 10, 29, 20, 0)                            # closed at 16:00 ET = 20:00 UTC
+    assert markets.session("META", "Stocks", utc(2026, 10, 31, 15, 0))[0] is False         # Saturday
+    assert markets.session("META", "Stocks", utc(2026, 11, 2, 14, 35))[0] is True          # Monday after clocks went back: 09:35 ET
+    # London: summer time ended 25 Oct, so 16:30 local = 16:30 UTC
+    assert markets.session("IUSA.L", "ETF", utc(2026, 10, 29, 16, 0))[0] is True
+    assert markets.session("IUSA.L", "ETF", utc(2026, 10, 29, 16, 45))[0] is False
+    assert markets.session("IUSA.L", "ETF", utc(2026, 10, 29, 7, 30))[0] is False
+    # crypto never closes; forex-like instruments close Fri 22:00 UTC until Sun 22:00 UTC
+    assert markets.session("BTC", "Cryptocurrencies", utc(2026, 10, 31, 3, 0))[0] is True
+    assert markets.session("EURUSD", "Currencies", utc(2026, 10, 30, 21, 0))[0] is True
+    closed, last = markets.session("EURUSD", "Currencies", utc(2026, 10, 31, 12, 0))
+    assert closed is False and last == utc(2026, 10, 30, 22, 0)
+    assert markets.session("EURUSD", "Currencies", utc(2026, 11, 1, 23, 0))[0] is True
+    # unknown exchange suffix is treated as open so it is never skipped by mistake
+    assert markets.session("X.ZZ", "Stocks", utc(2026, 10, 31, 12, 0))[0] is True
+
+    # a closed market is read once after the close, then left alone by the scheduled refresh
+    reads = {"n": 0}
+
+    class EC:
+        def search_item(self, sym):
+            reads["n"] += 1
+            return {"internalInstrumentId": 7, "internalInstrumentDisplayName": sym, "internalAssetClassName": "Stocks",
+                    "dailyPriceChange": 0.5, "currentRate": 10}
+        def daily_candles(self, iid, count=365):
+            return [{"date": "d", "open": 1, "high": 12, "low": 8, "close": 10}] * 3
+        def rates(self, ids):
+            return {7: {"bid": 10, "ask": 10.1}}
+
+    clock = {"t": utc(2026, 10, 29, 21, 0).timestamp()}          # after the US close
+    monkeypatch.setattr(markets.time, "time", lambda: clock["t"])
+    ec = EC()
+    markets.watchlist_rows(ec, ["META"])
+    assert reads["n"] == 1
+    clock["t"] += 3600
+    markets.invalidate(open_only=True)
+    markets.watchlist_rows(ec, ["META"])
+    assert reads["n"] == 1                                       # settled: not refetched while closed
+    markets.invalidate()                                         # the manual button still forces it
+    markets.watchlist_rows(ec, ["META"])
+    assert reads["n"] == 2
+    # data captured while open is refreshed once after the close
+    clock["t"] = utc(2026, 10, 30, 19, 0).timestamp()            # Fri 15:00 ET, open
+    markets.invalidate()
+    markets.watchlist_rows(ec, ["META"])
+    n = reads["n"]
+    clock["t"] = utc(2026, 10, 30, 20, 5).timestamp()            # just after the close
+    markets.invalidate(open_only=True)
+    markets.watchlist_rows(ec, ["META"])
+    assert reads["n"] == n + 1
+    clock["t"] = utc(2026, 11, 2, 12, 0).timestamp()             # Monday before the open
+    markets.invalidate(open_only=True)
+    markets.watchlist_rows(ec, ["META"])
+    assert reads["n"] == n + 1
+    clock["t"] = utc(2026, 11, 2, 15, 0).timestamp()             # Monday 10:00 ET, open again
+    markets.invalidate(open_only=True)
+    markets.watchlist_rows(ec, ["META"])
+    assert reads["n"] == n + 2
 
 
 def test_settings_sections_and_inline_validation(eng, monkeypatch):

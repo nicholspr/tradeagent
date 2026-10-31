@@ -30,7 +30,7 @@ def refresh_markets() -> None:
     """Scheduled job: re-read the watchlist from eToro. Read-only; failures only get logged."""
     try:
         symbols = [i.symbol for i in policy.parse_watchlist(store.get_settings()["watchlist"]) if i.symbol]
-        markets.invalidate()
+        markets.invalidate(open_only=True)
         rows = markets.watchlist_rows(engine.client(), symbols) if symbols else []
         bad = [r["symbol"] for r in rows if r.get("error")]
         if bad:
@@ -346,7 +346,7 @@ def markets_card(s: dict) -> str:
     stamp = (datetime.fromtimestamp(ts, config_tz()).strftime("%H:%M") if ts else "just now")
     return (table("".join(market_row(r) for r in rows), head)
             + f"<form method=post action='{B}/watchlist/refresh' class=row style='margin-top:10px'>"
-              f"<span class=muted>Updated {stamp} · refreshes from eToro every {markets.REFRESH_MINUTES} minutes</span>"
+              f"<span class=muted>Updated {stamp} · refreshes from eToro every {markets.REFRESH_MINUTES} minutes while markets are open</span>"
               f"<button class=sec>Refresh now</button></form>"
             + "<p class=muted>Short and Buy are the bid and ask. "
               "Sentiment is the share of eToro investors holding long or short. Display only.</p>")
