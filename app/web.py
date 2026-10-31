@@ -5,6 +5,7 @@ import threading
 from urllib.parse import urlparse
 from contextlib import asynccontextmanager
 from datetime import datetime, timedelta, timezone
+from zoneinfo import ZoneInfo
 
 from apscheduler.schedulers.background import BackgroundScheduler
 from apscheduler.triggers.cron import CronTrigger
@@ -25,6 +26,19 @@ def _hm(v: str, default: str) -> tuple[int, int]:
         return int(h), int(m)
 
 
+def refresh_markets() -> None:
+    """Scheduled job: re-read the watchlist from eToro. Read-only; failures only get logged."""
+    try:
+        symbols = [i.symbol for i in policy.parse_watchlist(store.get_settings()["watchlist"]) if i.symbol]
+        markets.invalidate()
+        rows = markets.watchlist_rows(engine.client(), symbols) if symbols else []
+        bad = [r["symbol"] for r in rows if r.get("error")]
+        if bad:
+            store.log("warn", f"watchlist refresh: no data for {', '.join(bad)}")
+    except Exception as e:  # noqa: BLE001
+        store.log("warn", f"watchlist refresh failed: {e}")
+
+
 def schedule_jobs() -> None:
     s = store.get_settings()
     h, m = _hm(s["schedule_time"], "15:05")
@@ -34,6 +48,8 @@ def schedule_jobs() -> None:
     sched.add_job(engine.scheduled_analysis, CronTrigger(hour=ch, minute=cm), id="crypto",
                   replace_existing=True, kwargs={"asset": "crypto"}, max_instances=1)
     sched.add_job(engine.process_queue, "interval", minutes=5, id="queue", replace_existing=True, max_instances=1)
+    sched.add_job(refresh_markets, "interval", minutes=markets.REFRESH_MINUTES, id="markets",
+                  replace_existing=True, max_instances=1)
     sched.add_job(engine.daily_summary, CronTrigger(day_of_week="mon-fri", hour=21, minute=30),
                   id="summary", replace_existing=True)
 
@@ -310,6 +326,13 @@ def market_row(r: dict) -> str:
             f"<td class=rcell>{rng}</td><td class=scell>{sent_cell}</td></tr>")
 
 
+def config_tz():
+    try:
+        return ZoneInfo(config.TZ)
+    except Exception:  # noqa: BLE001
+        return timezone.utc
+
+
 def markets_card(s: dict) -> str:
     symbols = [i.symbol for i in policy.parse_watchlist(s["watchlist"]) if i.symbol]
     if not symbols:
@@ -319,8 +342,13 @@ def markets_card(s: dict) -> str:
     except Exception as e:  # noqa: BLE001
         return f"<p class=muted>Market data unavailable: {esc(str(e))}</p>"
     head = ("<tr><th>Markets</th><th>Change 1D</th><th></th><th>Short</th><th>Buy</th><th>52W range</th><th>Sentiment</th></tr>")
+    ts = markets.updated_at()
+    stamp = (datetime.fromtimestamp(ts, config_tz()).strftime("%H:%M") if ts else "just now")
     return (table("".join(market_row(r) for r in rows), head)
-            + "<p class=muted>Live data from eToro, cached for a minute. Short and Buy are the bid and ask. "
+            + f"<form method=post action='{B}/watchlist/refresh' class=row style='margin-top:10px'>"
+              f"<span class=muted>Updated {stamp} · refreshes from eToro every {markets.REFRESH_MINUTES} minutes</span>"
+              f"<button class=sec>Refresh now</button></form>"
+            + "<p class=muted>Short and Buy are the bid and ask. "
               "Sentiment is the share of eToro investors holding long or short. Display only.</p>")
 
 
@@ -408,7 +436,13 @@ def dashboard():
             + card("Run an analysis now", run_card, "c3" if config.DRY_RUN else "c6")
             + test_card
             + "</div><p class=muted>Research tool output is not financial advice. Limits are enforced by code, not by the AI.</p>")
-    return page("Overview", body, refresh=30 if running else 0, active="Overview")
+    return page("Overview", body, refresh=30 if running else markets.REFRESH_MINUTES * 60, active="Overview")
+
+
+@app.post("/watchlist/refresh")
+def watchlist_refresh():
+    markets.invalidate()
+    return back()
 
 
 @app.get("/logs", response_class=HTMLResponse)

@@ -268,11 +268,11 @@ def test_dashboard_autorefresh_while_running(eng, monkeypatch):
     importlib.reload(web)
     monkeypatch.setattr(web.sched, "start", lambda: None)
     with TestClient(web.app) as c:
-        assert "http-equiv=refresh" not in c.get("/").text
+        assert "http-equiv=refresh content=900" in c.get("/").text       # idle: the 15-minute watchlist refresh
         rid = store.start_run("BTC")
         assert "http-equiv=refresh content=30" in c.get("/").text
         store.finish_run(rid, "Hold", "x")
-        assert "http-equiv=refresh" not in c.get("/").text
+        assert "http-equiv=refresh content=900" in c.get("/").text
 
 
 def test_status_strip_shows_state(eng, monkeypatch):
@@ -337,7 +337,7 @@ def test_run_progress_and_report(eng, monkeypatch):
         # a run left unfinished by a restart hours ago is not shown as live work
         with store.connect() as conn:
             conn.execute("UPDATE runs SET started=? WHERE id=?", ((datetime.now(timezone.utc) - timedelta(hours=5)).isoformat(), rid))
-        assert "http-equiv=refresh" not in c.get("/").text
+        assert "http-equiv=refresh content=900" in c.get("/").text
         out = engine.analyse(policy.WatchItem("META", "META"))
         run_id = store.proposals("pending")[0]["run_id"]
         page = c.get(f"/run/{run_id}").text
@@ -558,6 +558,65 @@ def test_pages_layout_logs_control_and_portfolio(eng, monkeypatch):
         assert r.headers["location"].endswith("/settings") and store.get_settings()["mode"] == "signals"
         bad = c.post("/settings", data={"watchlist": "META", "max_trade_usd": "abc"})
         assert bad.status_code == 400 and "Turn kill switch OFF" in bad.text      # control still shown on validation errors
+
+
+def test_watchlist_refreshes_every_15_minutes(eng, monkeypatch):
+    engine, store, sent, fs, rating = eng
+    from fastapi.testclient import TestClient
+    from app import web, markets
+    importlib.reload(markets)
+    importlib.reload(web)
+    monkeypatch.setattr(web.sched, "start", lambda: None)
+    assert markets.REFRESH_MINUTES == 15 and markets.QUOTE_TTL == 900
+    calls = {"search": 0, "fail": True}
+
+    class EC:
+        def search_item(self, sym):
+            calls["search"] += 1
+            if sym == "BAD" and calls["fail"]:
+                raise RuntimeError("down")
+            return {"internalInstrumentId": 5, "internalInstrumentDisplayName": sym, "dailyPriceChange": 1.0,
+                    "currentRate": 10, "isCurrentlyTradable": True}
+        def daily_candles(self, iid, count=365):
+            return [{"date": "d", "open": 1, "high": 12, "low": 8, "close": 10}] * 3
+        def rates(self, ids):
+            return {5: {"bid": 10, "ask": 10.1}}
+
+    ec, clock = EC(), {"t": 1000.0}
+    monkeypatch.setattr(markets.time, "time", lambda: clock["t"])
+    markets.watchlist_rows(ec, ["META", "BAD"])
+    assert calls["search"] == 2
+    markets.watchlist_rows(ec, ["META", "BAD"])                  # META cached; the failed BAD retried at once
+    assert calls["search"] == 3
+    calls["fail"] = False
+    markets.watchlist_rows(ec, ["META", "BAD"])
+    clock["t"] += 14 * 60
+    markets.watchlist_rows(ec, ["META", "BAD"])
+    assert calls["search"] == 4                                  # still cached after 14 minutes
+    clock["t"] += 2 * 60
+    markets.watchlist_rows(ec, ["META", "BAD"])
+    assert calls["search"] == 6                                  # re-read from eToro after 15 minutes
+    assert markets.updated_at() == clock["t"]
+    markets.invalidate()
+    markets.watchlist_rows(ec, ["META"])
+    assert calls["search"] == 7
+
+    monkeypatch.setattr(web.engine, "client", lambda: ec)
+    store.set_setting("watchlist", "META,GOOG")
+    web.refresh_markets()
+    assert calls["search"] == 9                                  # the scheduled job forces a fresh read of both
+    web.schedule_jobs()
+    job = web.sched.get_job("markets")
+    assert job is not None and job.trigger.interval.total_seconds() == 900
+    with TestClient(web.app) as c:
+        page = c.get("/").text
+        assert "http-equiv=refresh content=900" in page and "refreshes from eToro every 15 minutes" in page
+        assert "Refresh now" in page
+        before = calls["search"]
+        assert c.post("/watchlist/refresh", follow_redirects=False).status_code == 303
+        c.get("/")
+        assert calls["search"] > before                          # manual refresh bypasses the cache
+        assert not orders(fs)
 
 
 def test_settings_sections_and_inline_validation(eng, monkeypatch):

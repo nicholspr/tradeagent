@@ -6,12 +6,25 @@ import threading
 import time
 from concurrent.futures import ThreadPoolExecutor
 
-QUOTE_TTL = 60          # seconds: the overview page can refresh often without hammering eToro
+REFRESH_MINUTES = 15
+QUOTE_TTL = REFRESH_MINUTES * 60   # quotes are re-read from eToro this often; page loads in between use the cache
 HISTORY_TTL = 3600      # daily candles only change once a day
 SPARK_DAYS = 30
 
 _lock = threading.Lock()
 _cache: dict = {}
+_updated: float | None = None      # when quotes were last read from eToro
+
+
+def updated_at() -> float | None:
+    return _updated
+
+
+def invalidate() -> None:
+    """Drop cached quotes and rates (not the daily history) so the next read goes to eToro."""
+    with _lock:
+        for k in [k for k in _cache if k[0] in ("quote", "rates")]:
+            del _cache[k]
 
 
 def _cached(key, ttl, fn):
@@ -21,8 +34,9 @@ def _cached(key, ttl, fn):
     if hit and now - hit[0] < ttl:
         return hit[1]
     val = fn()
-    with _lock:
-        _cache[key] = (now, val)
+    if not isinstance(val, Exception):   # never keep a failure for the whole TTL
+        with _lock:
+            _cache[key] = (now, val)
     return val
 
 
@@ -89,8 +103,11 @@ def watchlist_rows(ec, symbols: list[str]) -> list[dict]:
     """One row per symbol. A symbol that fails shows an error row instead of breaking the page."""
     def one(sym):
         def load():
+            global _updated
             try:
-                return _fetch_one(ec, sym)
+                res = _fetch_one(ec, sym)
+                _updated = time.time()
+                return res
             except Exception as e:  # noqa: BLE001
                 return e
         return _cached(("quote", sym), QUOTE_TTL, load)
