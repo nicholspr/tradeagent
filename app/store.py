@@ -113,6 +113,14 @@ def runs(limit: int = 30) -> list:
         return [dict(r) for r in c.execute("SELECT * FROM runs ORDER BY id DESC LIMIT ?", (limit,))]
 
 
+def proposals_for_run(run_id: int) -> list:
+    with _lock, connect() as c:
+        out = [dict(r) for r in c.execute("SELECT * FROM proposals WHERE run_id=? ORDER BY id", (run_id,))]
+    for d in out:
+        d["position_ids"] = json.loads(d["position_ids"] or "[]")
+    return out
+
+
 def get_run(run_id: int) -> dict | None:
     with _lock, connect() as c:
         r = c.execute("SELECT * FROM runs WHERE id=?", (run_id,)).fetchone()

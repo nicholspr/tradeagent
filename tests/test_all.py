@@ -316,6 +316,96 @@ def test_approval_queue_shows_expiry_and_reason(eng, monkeypatch):
         assert "Nothing waiting." in c.get("/").text
 
 
+def test_run_progress_and_report(eng, monkeypatch):
+    engine, store, sent, fs, rating = eng
+    from fastapi.testclient import TestClient
+    from app import web
+    importlib.reload(web)
+    monkeypatch.setattr(web.sched, "start", lambda: None)
+    t0 = datetime(2026, 1, 1, 12, 0, tzinfo=timezone.utc)
+    run = {"started": t0.isoformat(), "finished": None}
+    assert web.run_duration(run, t0 + timedelta(minutes=3)) == "running 3m"
+    assert web.run_duration(run, t0 + timedelta(seconds=20)) == "just started"
+    assert web.run_duration({**run, "finished": (t0 + timedelta(minutes=4)).isoformat()}) == "took 4m"
+    assert "okp'>Buy" in web.rating_pill("Buy") and "on'>Sell" in web.rating_pill("Sell")
+    with TestClient(web.app) as c:
+        rid = store.start_run("BTC")
+        html = c.get("/").text
+        assert "pill warn'>running" in html and "<b>BTC</b>" in html
+        assert "http-equiv=refresh content=30" in c.get(f"/run/{rid}").text
+        # a run left unfinished by a restart hours ago is not shown as live work
+        with store.connect() as conn:
+            conn.execute("UPDATE runs SET started=? WHERE id=?", ((datetime.now(timezone.utc) - timedelta(hours=5)).isoformat(), rid))
+        assert "http-equiv=refresh" not in c.get("/").text
+        out = engine.analyse(policy.WatchItem("META", "META"))
+        run_id = store.proposals("pending")[0]["run_id"]
+        page = c.get(f"/run/{run_id}").text
+        assert "Rating" in page and "BUY META" in page and "pill warn'>pending" in page and "FINAL: Buy" in page
+        assert "http-equiv=refresh" not in page
+
+
+def test_scheduler_can_be_disabled(eng, monkeypatch):
+    engine, store, sent, fs, rating = eng
+    from fastapi.testclient import TestClient
+    from app import config, web
+    importlib.reload(web)
+    started = []
+    monkeypatch.setattr(web.sched, "start", lambda: started.append(1))
+    monkeypatch.setattr(config, "SCHEDULER_ENABLED", False)
+    with TestClient(web.app) as c:
+        assert c.get("/health").status_code == 200
+    assert started == []
+    monkeypatch.setattr(config, "SCHEDULER_ENABLED", True)
+    with TestClient(web.app):
+        pass
+    assert started == [1]
+
+
+def test_portfolio_allocation_and_cap_warnings(eng, monkeypatch):
+    engine, store, sent, fs, rating = eng
+    from fastapi.testclient import TestClient
+    from app import web
+    importlib.reload(web)
+    monkeypatch.setattr(web.sched, "start", lambda: None)
+    assert [web.alloc_state(x, 40) for x in (10, 32, 40, 41)] == ["ok", "near", "near", "over"]
+    assert web.alloc_state(90, 0) == "ok"
+    with TestClient(web.app) as c:
+        html = c.get("/").text               # META is 150 of 650 = 23%, cap 40%
+        assert "class=bar" in html and "left:40.0%" in html and "over cap" not in html and "near cap" not in html
+        store.set_setting("max_position_pct", "25")
+        assert "near cap" in c.get("/").text
+        store.set_setting("max_position_pct", "20")
+        html = c.get("/").text
+        assert "over cap" in html and "above your 20% cap" in html
+
+
+def test_settings_sections_and_inline_validation(eng, monkeypatch):
+    engine, store, sent, fs, rating = eng
+    from fastapi.testclient import TestClient
+    from app import web
+    importlib.reload(web)
+    monkeypatch.setattr(web.sched, "start", lambda: None)
+    good = {k: store.get_settings()[k] for k in ["watchlist", *web.NUMERIC, *web.TIME_FIELDS]}
+    assert web.validate_settings(good) == {}
+    bads = web.validate_settings({**good, "schedule_time": "25:99", "crypto_time": "9am", "max_trade_usd": "abc",
+                                  "max_position_pct": "150", "cash_buffer_usd": "-1", "analyses_per_day": "nan"})
+    assert set(bads) == {"schedule_time", "crypto_time", "max_trade_usd", "max_position_pct",
+                         "cash_buffer_usd", "analyses_per_day"}
+    with TestClient(web.app) as c:
+        page = c.get("/settings").text
+        for title in ("Watchlist and schedule", "Trading limits", "Approvals and sells"):
+            assert title in page
+        assert "% of portfolio" in page and "Cost control" in page
+        r = c.post("/settings", data={**good, "max_trade_usd": "abc", "schedule_time": "99:00", "analyses_per_day": "5"})
+        assert r.status_code == 400
+        assert "Enter a number." in r.text and "Use 24-hour HH:MM" in r.text and "Not saved: fix the 2 highlighted" in r.text
+        assert "value='abc'" in r.text and "value='5'" in r.text           # user input kept
+        assert store.get_settings()["analyses_per_day"] != "5"            # nothing saved
+        r = c.post("/settings", data={**good, "analyses_per_day": "3", "allow_sells": "on"}, follow_redirects=False)
+        assert r.status_code == 303 and store.get_settings()["analyses_per_day"] == "3"
+        assert store.get_settings()["auto_sells"] == "off"                # unticked toggle -> off
+
+
 def test_create_test_trade_only_in_dry_run(eng, monkeypatch):
     engine, store, sent, fs, rating = eng
     from app import config

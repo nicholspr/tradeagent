@@ -30,3 +30,5 @@ APP_SECRET = env("APP_SECRET", "change-me")
 TZ = env("TZ", "Europe/London")
 DATA_DIR = env("DATA_DIR", "/data")
 DRY_RUN = env("DRY_RUN", "false").lower() in ("1", "true", "yes")
+# Set SCHEDULER=off for local runs so they never trigger scheduled analyses or queue processing.
+SCHEDULER_ENABLED = env("SCHEDULER", "on").lower() not in ("0", "off", "false", "no")

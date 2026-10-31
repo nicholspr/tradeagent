@@ -40,9 +40,11 @@ def schedule_jobs() -> None:
 @asynccontextmanager
 async def lifespan(_app):
     store.init()
-    schedule_jobs()
-    sched.start()
-    store.log("info", f"started ({config.ETORO_ENV.upper()} account{', DRY RUN' if config.DRY_RUN else ''})")
+    if config.SCHEDULER_ENABLED:
+        schedule_jobs()
+        sched.start()
+    store.log("info", f"started ({config.ETORO_ENV.upper()} account{', DRY RUN' if config.DRY_RUN else ''}"
+                      f"{'' if config.SCHEDULER_ENABLED else ', scheduler off'})")
     yield
     if sched.running:
         sched.shutdown(wait=False)
@@ -95,6 +97,16 @@ input:focus,select:focus,textarea:focus{outline:none;border-color:var(--accent);
 .fields{display:grid;grid-template-columns:repeat(auto-fill,minmax(220px,1fr));gap:12px}
 label{font-size:12px;color:var(--muted);display:block;margin-bottom:4px}.muted{color:var(--muted);font-size:12px}
 pre{white-space:pre-wrap;font-size:13px;margin:0}p{margin:10px 0 0}
+summary{cursor:pointer;color:var(--muted);font-weight:600;font-size:13px}
+.barcell{min-width:140px}
+h3{font-size:14px;margin:22px 0 10px;padding-bottom:6px;border-bottom:1px solid var(--line)}h3:first-child{margin-top:0}
+.unit{color:var(--muted);font-weight:400;font-size:11px;margin-left:4px}
+.help{font-size:11px;color:var(--muted);margin-top:4px}
+.err{font-size:12px;color:var(--red-t);margin-top:4px;font-weight:600}
+input.invalid,textarea.invalid{border-color:#dc2626;box-shadow:0 0 0 2px #dc262633}.bar{position:relative;height:8px;background:var(--chip);border-radius:4px;margin-bottom:3px}
+.bar .fill{position:absolute;left:0;top:0;bottom:0;border-radius:4px;background:var(--accent)}
+.bar .fill.near{background:#d4a72c}.bar .fill.over{background:#dc2626}
+.bar .cap{position:absolute;top:-3px;bottom:-3px;width:2px;background:var(--text);opacity:.7}
 @media (max-width:1280px){.c3,.c4{grid-column:span 6}.c8,.c9{grid-column:span 12}}
 @media (max-width:760px){
  header{padding:10px 12px 0;gap:8px}nav{margin-left:0;width:100%;overflow-x:auto}nav a{padding:10px 12px;flex:1;text-align:center}
@@ -173,6 +185,34 @@ def queue_row(p: dict, s: dict) -> str:
             f"<td>{status_pill(p['status'])}<br><span class=muted>{time_left(p, s)}</span></td><td>{acts}</td></tr>")
 
 
+def run_duration(r: dict, now: datetime | None = None) -> str:
+    """'running 3m' for an unfinished run, 'took 4m' for a finished one."""
+    try:
+        start = datetime.fromisoformat(r["started"])
+        end = datetime.fromisoformat(r["finished"]) if r["finished"] else (now or datetime.now(timezone.utc))
+    except (TypeError, ValueError):
+        return ""
+    mins = max(0, int((end - start).total_seconds() // 60))
+    return f"{'took' if r['finished'] else 'running'} {mins}m" if mins else ("took <1m" if r["finished"] else "just started")
+
+
+RATING_CLS = {"buy": "okp", "overweight": "okp", "hold": "", "underweight": "warn", "sell": "on"}
+
+
+def rating_pill(rating: str | None, r: dict | None = None) -> str:
+    if rating:
+        return f"<span class='pill {RATING_CLS.get(rating.strip().lower(), 'warn')}'>{esc(rating)}</span>"
+    if r and r.get("error"):
+        return "<span class='pill on'>error</span>"
+    return "<span class='pill warn'>running…</span>"
+
+
+def active_runs(limit_hours: float = 2) -> list:
+    """Unfinished runs started recently; older ones are leftovers from a restart, not live work."""
+    cutoff = datetime.now(timezone.utc) - timedelta(hours=limit_hours)
+    return [r for r in store.runs(5) if not r["finished"] and datetime.fromisoformat(r["started"]) > cutoff]
+
+
 def page(title: str, body: str, refresh: int = 0, active: str = "", nav: bool = True) -> HTMLResponse:
     s = store.get_settings()
     meta = f"<meta http-equiv=refresh content={refresh}>" if refresh else ""
@@ -194,6 +234,51 @@ def table(rows: str, head: str = "") -> str:
     return f"<div class=tbl><table>{head}{rows}</table></div>"
 
 
+def alloc_state(share_pct: float, cap_pct: float) -> str:
+    """'over' above the cap, 'near' within 80% of it, else 'ok'. No cap (0) never warns."""
+    if cap_pct <= 0:
+        return "ok"
+    if share_pct > cap_pct:
+        return "over"
+    return "near" if share_pct >= cap_pct * 0.8 else "ok"
+
+
+def alloc_bar(share_pct: float, cap_pct: float) -> str:
+    state = alloc_state(share_pct, cap_pct)
+    mark = f"<i class=cap style='left:{min(cap_pct, 100):.1f}%' title='Max {cap_pct:g}% per holding'></i>" if cap_pct > 0 else ""
+    return (f"<div class=bar><b class='fill {state}' style='width:{min(max(share_pct, 0), 100):.1f}%'></b>{mark}</div>")
+
+
+def portfolio_card(book, s: dict) -> str:
+    cap = float(s.get("max_position_pct") or 0)
+    total = book.total_usd or 0
+    holdings = sorted(book.holdings.values(), key=lambda h: -h.value_usd)
+    rows, warns = "", []
+    for h in holdings:
+        share = h.value_usd / total * 100 if total else 0
+        state = alloc_state(share, cap)
+        if state != "ok":
+            warns.append((h.symbol, share, state))
+        flag = {"over": " <span class='pill on'>over cap</span>", "near": " <span class='pill warn'>near cap</span>"}.get(state, "")
+        rows += (f"<tr><td><b>{esc(h.symbol)}</b>{flag}</td><td>${h.value_usd:,.2f}</td>"
+                 f"<td class=barcell>{alloc_bar(share, cap)}<span class=muted>{share:.0f}%</span></td>"
+                 f"<td>{h.units:.6g}</td><td>{'$%.2f' % h.pending_usd if h.pending_usd else ''}</td></tr>")
+    cash_share = book.cash_usd / total * 100 if total else 0
+    rows += (f"<tr><td><span class=muted>Cash</span></td><td>${book.cash_usd:,.2f}</td>"
+             f"<td class=barcell>{alloc_bar(cash_share, 0)}<span class=muted>{cash_share:.0f}%</span></td><td></td><td></td></tr>")
+    note = ""
+    if warns:
+        note = ("<p class=muted>" + "; ".join(
+            f"<b>{esc(sym)}</b> is {share:.0f}% of the portfolio, {'above' if st == 'over' else 'close to'} your {cap:g}% cap"
+            for sym, share, st in warns) + ". New buys in a holding stop at the cap.</p>")
+    elif cap > 0:
+        note = f"<p class=muted>The marker on each bar is your {cap:g}% per-holding cap.</p>"
+    return (f"<div class=stat><div><div class=muted>Total</div><div class=big>${book.total_usd:,.2f}</div></div>"
+            f"<div><div class=muted>Cash</div><div class=big>${book.cash_usd:,.2f}</div></div>"
+            f"<div><div class=muted>Holdings</div><div class=big>{sum(1 for h in holdings if h.units > 0)}</div></div></div>"
+            + table(rows, "<tr><th>Holding</th><th>Value</th><th>Share of portfolio</th><th>Units</th><th>Pending buys</th></tr>") + note)
+
+
 @app.get("/health")
 def health():
     return {"ok": True, "env": config.ETORO_ENV, "mode": store.get_settings()["mode"]}
@@ -204,13 +289,7 @@ def dashboard():
     s = store.get_settings()
     try:
         book = engine.client().book()
-        rows = "".join(f"<tr><td><b>{esc(h.symbol)}</b></td><td>${h.value_usd:,.2f}</td>"
-                       f"<td>{h.value_usd / book.total_usd * 100 if book.total_usd else 0:.0f}%</td><td>{h.units:.6g}</td>"
-                       f"<td>{'$%.2f' % h.pending_usd if h.pending_usd else ''}</td></tr>"
-                       for h in sorted(book.holdings.values(), key=lambda h: -h.value_usd))
-        port = (f"<div class=stat><div><div class=muted>Total</div><div class=big>${book.total_usd:,.2f}</div></div>"
-                f"<div><div class=muted>Cash</div><div class=big>${book.cash_usd:,.2f}</div></div></div>"
-                + table(rows, "<tr><th>Holding</th><th>Value</th><th>Share</th><th>Units</th><th>Pending buys</th></tr>"))
+        port = portfolio_card(book, s)
     except Exception as e:  # noqa: BLE001
         port = f"<p class=muted>Portfolio unavailable: {esc(str(e))}</p>"
 
@@ -223,7 +302,7 @@ def dashboard():
         for p in store.proposals(None, 25)) or "<tr><td class=muted>None yet.</td></tr>"
     runs = "".join(
         f"<tr><td><a href='{B}/run/{r['id']}'>#{r['id']}</a></td><td>{r['started'][:16].replace('T', ' ')}</td><td><b>{esc(r['ticker'])}</b></td>"
-        f"<td>{esc(r['rating'] or ('error' if r['error'] else 'running…'))}</td></tr>" for r in store.runs(15)) \
+        f"<td>{rating_pill(r['rating'], r)}<br><span class=muted>{run_duration(r)}</span></td></tr>" for r in store.runs(15)) \
         or "<tr><td class=muted>None yet.</td></tr>"
     evs = "".join(f"<tr><td class=muted style='white-space:nowrap;width:1%'>{e['ts'][5:16].replace('T', ' ')}</td><td style='width:1%'>{e['level']}</td>"
                   f"<td>{esc(e['msg'][:400])}</td></tr>" for e in store.events(40))
@@ -232,7 +311,8 @@ def dashboard():
         return f"<option value={v} {'selected' if s['mode'] == v else ''}>{label}</option>"
 
     items = "".join(f"<option>{esc(i.symbol)}</option>" for i in policy.parse_watchlist(s["watchlist"]))
-    running = any(not r["finished"] for r in store.runs(5))
+    active = active_runs()
+    running = bool(active)
     kill_on = s["kill_switch"] == "on"
     control = (f"<form method=post action='{B}/mode' class=row><div class=grow><label>Mode</label><select name=mode>"
                f"{opt('signals', 'Signals only — never trades')}{opt('approval', 'Approval — I approve each trade')}"
@@ -244,7 +324,9 @@ def dashboard():
     run_card = (f"<form method=post action='{B}/run' class=row><div class=grow><select name=symbol>{items}</select></div>"
                 f"<button>Analyse</button></form>"
                 f"<p class=muted>Takes several minutes and costs roughly $0.50–$3 in Claude usage. Follows the current mode.</p>"
-                + ("<p class=muted>Analysis running: this page refreshes every 30 seconds.</p>" if running else ""))
+                + (f"<p><span class='pill warn'>running</span> " + ", ".join(
+                    f"<a href='{B}/run/{r['id']}'><b>{esc(r['ticker'])}</b></a> <span class=muted>({run_duration(r)})</span>"
+                    for r in active) + "</p><p class=muted>This page refreshes every 30 seconds.</p>" if running else ""))
     test_card = card("Test tools <span class=pill>test mode only</span>",
                      f"<form method=post action='{B}/test-trade' class=row>"
                      f"<div class=grow><select name=symbol>{items}</select></div>"
@@ -266,23 +348,91 @@ def dashboard():
     return page("Overview", body, refresh=30 if running else 0, active="Overview")
 
 
-@app.get("/settings", response_class=HTMLResponse)
-def settings_page():
-    s = store.get_settings()
-    fields = [("analyses_per_day", "Analyses per day (LLM cost)"), ("schedule_time", "Stock run time (UK, weekdays)"),
-              ("crypto_time", "Crypto run time (UK, daily)"), ("max_trade_usd", "Max per trade ($)"),
-              ("max_daily_usd", "Max buys per day ($)"), ("max_trades_per_day", "Max trades per day"),
-              ("cash_buffer_usd", "Cash to keep ($)"), ("max_position_pct", "Max % in one holding"),
-              ("cooldown_days", "Days between trades per holding"), ("approval_ttl_hours", "Approval expiry (hours)")]
-    form = "".join(f"<div><label>{esc(l)}</label><input name={k} value='{esc(s[k])}'></div>" for k, l in fields)
-    for k, l in (("allow_sells", "Agent may propose sells"), ("auto_sells", "Auto mode may sell without approval")):
-        form += (f"<div><label>{l}</label><select name={k}><option {'selected' if s[k] == 'on' else ''}>on</option>"
-                 f"<option {'selected' if s[k] != 'on' else ''}>off</option></select></div>")
-    limits = (f"<form method=post action='{B}/settings'>"
-              f"<label>Watchlist (eToro symbol[=research ticker][@crypto], comma-separated)</label>"
-              f"<textarea name=watchlist rows=2>{esc(s['watchlist'])}</textarea>"
-              f"<div class=fields style='margin-top:12px'>{form}</div>"
-              f"<p><button>Save settings</button></p></form>")
+SETTING_SECTIONS = [
+    ("Watchlist and schedule", [
+        ("analyses_per_day", "Analyses per day", "shares", "Cost control: each analysis costs roughly $0.50–$3 in Claude usage."),
+        ("schedule_time", "Share run time", "UK time, HH:MM", "Weekdays. 15:05 is just after the US market opens."),
+        ("crypto_time", "Crypto run time", "UK time, HH:MM", "Daily, for @crypto entries."),
+    ]),
+    ("Trading limits", [
+        ("max_trade_usd", "Max per trade", "$", "A Buy rating uses this; Overweight uses half."),
+        ("max_daily_usd", "Max buys per day", "$", "Total spent on buys per day."),
+        ("max_trades_per_day", "Max trades per day", "trades", "Buys and sells together."),
+        ("cash_buffer_usd", "Cash to keep", "$", "Never spent by the agent."),
+        ("max_position_pct", "Max in one holding", "% of portfolio", "Buys stop once a holding would pass this."),
+        ("cooldown_days", "Days between trades", "days per holding", "Stops flip-flopping on one share."),
+    ]),
+    ("Approvals and sells", [
+        ("approval_ttl_hours", "Approval expiry", "hours", "Unapproved trades expire after this."),
+    ]),
+]
+TOGGLES = [("allow_sells", "Agent may propose sells", "If off, the agent can only buy."),
+           ("auto_sells", "Auto mode may sell without approval", "Keep off so sells always need your OK.")]
+TIME_FIELDS = ("schedule_time", "crypto_time")
+PCT_FIELDS = {"max_position_pct"}
+
+
+def validate_settings(vals: dict) -> dict:
+    """Return {field: message} for every invalid value; empty means all good."""
+    errors = {}
+    for k in NUMERIC:
+        try:
+            n = float(vals.get(k, ""))
+        except ValueError:
+            errors[k] = "Enter a number."
+            continue
+        if n != n or n in (float("inf"), float("-inf")) or n < 0:
+            errors[k] = "Enter a number of 0 or more."
+        elif k in PCT_FIELDS and n > 100:
+            errors[k] = "Enter a percentage from 0 to 100."
+    for k in TIME_FIELDS:
+        v = (vals.get(k) or "").strip()
+        try:
+            h, m = v.split(":")
+            if not (0 <= int(h) <= 23 and 0 <= int(m) <= 59):
+                raise ValueError
+        except ValueError:
+            errors[k] = "Use 24-hour HH:MM, e.g. 15:05."
+    bad = [t for t in (vals.get("watchlist") or "").replace("\n", ",").split(",")
+           if t.strip() and not policy.parse_watchlist(t)[0].symbol]
+    if bad:
+        errors["watchlist"] = "Each entry needs an eToro symbol, e.g. META or BTC=BTC-USD@crypto."
+    return errors
+
+
+def settings_page(s: dict | None = None, errors: dict | None = None, status: int = 200) -> HTMLResponse:
+    stored = store.get_settings()
+    s = {**stored, **(s or {})}
+    errors = errors or {}
+
+    def err(k: str) -> str:
+        return f"<div class=err>{esc(errors[k])}</div>" if k in errors else ""
+
+    def bad(k: str) -> str:
+        return " class=invalid" if k in errors else ""
+
+    sections = ""
+    for title, fields in SETTING_SECTIONS:
+        inner = "".join(
+            f"<div><label>{esc(label)} <span class=unit>{esc(unit)}</span></label>"
+            f"<input name={k} value='{esc(s[k])}'{bad(k)}>{err(k)}<div class=help>{esc(help_)}</div></div>"
+            for k, label, unit, help_ in fields)
+        if title == "Approvals and sells":
+            for k, label, help_ in TOGGLES:
+                inner += (f"<div><label>{esc(label)}</label><select name={k}>"
+                          f"<option {'selected' if s[k] == 'on' else ''}>on</option>"
+                          f"<option {'selected' if s[k] != 'on' else ''}>off</option></select>"
+                          f"<div class=help>{esc(help_)}</div></div>")
+        sections += f"<h3>{esc(title)}</h3>"
+        if title == "Watchlist and schedule":
+            sections += (f"<label>Watchlist <span class=unit>eToro symbol[=research ticker][@crypto], comma-separated</span></label>"
+                         f"<textarea name=watchlist rows=2{bad('watchlist')}>{esc(s['watchlist'])}</textarea>{err('watchlist')}"
+                         f"<div class=help>Only these shares are researched, and only these can be bought.</div>"
+                         f"<div style='height:12px'></div>")
+        sections += f"<div class=fields>{inner}</div>"
+    banner = (f"<div class='banner stop' style='border-radius:8px;margin-bottom:12px'>Not saved: fix the "
+              f"{len(errors)} highlighted field{'s' if len(errors) != 1 else ''}.</div>") if errors else ""
+    limits = (f"{banner}<form method=post action='{B}/settings'>{sections}<p><button>Save settings</button></p></form>")
     keys = (f"<form method=post action='{B}/keys'>"
             f"<label>Public Key (x-api-key) — {keystate('etoro_api_key', config.ETORO_API_KEY)}</label>"
             f"<input name=api_key type=password autocomplete=off placeholder='leave blank to keep'>"
@@ -290,7 +440,14 @@ def settings_page():
             f"<textarea name=user_key rows=4 autocomplete=off placeholder='paste the long private key; leave blank to keep'></textarea>"
             f"<p><button>Save keys</button></p><p class=muted>Stored on your server only; never shown again.</p></form>")
     body = "<div class=layout>" + card("Limits and schedule", limits, "c8") + card("eToro connection", keys, "c4") + "</div>"
-    return page("Settings", body, active="Settings")
+    resp = page("Settings", body, active="Settings")
+    resp.status_code = status
+    return resp
+
+
+@app.get("/settings", response_class=HTMLResponse)
+def settings_get():
+    return settings_page()
 
 
 def keystate(name: str, env_value: str) -> str:
@@ -334,23 +491,19 @@ NUMERIC = {"analyses_per_day", "max_trade_usd", "max_daily_usd", "max_trades_per
 
 
 @app.post("/settings")
-async def save_settings(watchlist: str = Form(...), analyses_per_day: str = Form(...), schedule_time: str = Form(...),
-                        crypto_time: str = Form(...), max_trade_usd: str = Form(...), max_daily_usd: str = Form(...),
-                        max_trades_per_day: str = Form(...), cash_buffer_usd: str = Form(...),
-                        max_position_pct: str = Form(...), cooldown_days: str = Form(...),
-                        approval_ttl_hours: str = Form(...), allow_sells: str = Form("off"), auto_sells: str = Form("off")):
-    vals = dict(locals())
-    for k in NUMERIC:
-        try:
-            if float(vals[k]) < 0:
-                raise ValueError
-        except ValueError:
-            raise HTTPException(400, f"{k} must be a non-negative number")
-    for k in ("schedule_time", "crypto_time"):
-        _hm(vals[k], "15:05")
+async def save_settings(request: Request):
+    form = await request.form()
+    keys = ["watchlist", *NUMERIC, *TIME_FIELDS]
+    vals = {k: str(form.get(k, "")).strip() for k in keys}
+    vals["allow_sells"] = "on" if form.get("allow_sells") == "on" else "off"
+    vals["auto_sells"] = "on" if form.get("auto_sells") == "on" else "off"
+    errors = validate_settings(vals)
+    if errors:
+        return settings_page(vals, errors, status=400)
     for k, v in vals.items():
         store.set_setting(k, v)
-    schedule_jobs()
+    if config.SCHEDULER_ENABLED:
+        schedule_jobs()
     return back("/settings")
 
 
@@ -403,9 +556,25 @@ def show_run(run_id: int):
     r = store.get_run(run_id)
     if not r:
         raise HTTPException(404)
-    return page(f"Run {run_id}", f"<h1>{esc(r['ticker'])} · {esc(r['rating'] or '')}</h1>"
-                f"<p class=muted>{r['started']} → {r['finished'] or 'running'}</p>"
-                f"<div class=card><pre>{esc(r['decision'] or r['error'] or '')}</pre></div>")
+    props = store.proposals_for_run(run_id)
+    if props:
+        trade = "".join(f"<p><b>{esc(engine._describe(p)) if p['action'] != 'none' else 'No trade'}</b> "
+                        f"{status_pill(p['status'])} <span class=muted>{esc((p['error'] or p['reason'] or '')[:200])}</span></p>"
+                        for p in props)
+    elif r["finished"] and not r["error"]:
+        trade = "<p class=muted>No trade proposed (see the decision below).</p>"
+    else:
+        trade = ""
+    state = ("<span class='pill on'>failed</span>" if r["error"] else
+             "<span class='pill okp'>complete</span>" if r["finished"] else "<span class='pill warn'>running…</span>")
+    summary = (f"<div class=card><div class=stat><div><div class=muted>Rating</div>"
+               f"<div class=big>{rating_pill(r['rating'])}</div></div>"
+               f"<div><div class=muted>Run</div><div>{state} <span class=muted>{run_duration(r)}</span></div></div></div>{trade}</div>")
+    detail = (f"<details open class=card style='margin-top:16px'><summary>Agents' full decision</summary>"
+              f"<pre style='margin-top:12px'>{esc(r['decision'] or r['error'] or 'Waiting for the agents…')}</pre></details>")
+    return page(f"Run {run_id}", f"<h1>{esc(r['ticker'])} <span class=muted>run #{run_id}</span></h1>"
+                f"<p class=muted>{r['started'][:16].replace('T', ' ')} UTC</p>{summary}{detail}",
+                refresh=30 if not r["finished"] else 0)
 
 
 # ---- approval links (work from SMS/email without the dashboard login; token-protected) ----
