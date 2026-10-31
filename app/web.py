@@ -92,6 +92,7 @@ h1{font-size:20px;margin:0 0 12px}
 h2{font-size:13px;margin:0 0 12px;color:var(--muted);text-transform:uppercase;letter-spacing:.05em;
 display:flex;align-items:center;gap:8px;flex-wrap:wrap}
 h2 .right{margin-left:auto;text-transform:none;letter-spacing:0;font-weight:400}
+.clock{font-variant-numeric:tabular-nums;font-weight:600;font-size:14px;color:var(--text)}
 .card{background:var(--card);border:1px solid var(--line);border-radius:12px;padding:16px;min-width:0}
 .tbl{overflow-x:auto;-webkit-overflow-scrolling:touch}
 table{border-collapse:collapse;width:100%;font-size:13px}td,th{text-align:left;padding:7px 6px;border-bottom:1px solid var(--line2);vertical-align:top}
@@ -241,6 +242,19 @@ def active_runs(limit_hours: float = 2) -> list:
     return [r for r in store.runs(5) if not r["finished"] and datetime.fromisoformat(r["started"]) > cutoff]
 
 
+CLOCK_JS = ("<script>(function(){var els=document.querySelectorAll('[data-clock]');if(!els.length)return;"
+            "function tick(){var n=new Date();els.forEach(function(e){try{var o={timeZone:e.dataset.clock,hour12:false,"
+            "hour:'2-digit',minute:'2-digit',second:'2-digit'};e.textContent=n.toLocaleTimeString('en-GB',o);"
+            "e.title=n.toLocaleString('en-GB',{timeZone:e.dataset.clock,dateStyle:'full',timeStyle:'long'});}catch(x){}});}"
+            "tick();setInterval(tick,1000);})();</script>")
+
+
+def live_clock() -> str:
+    """Ticks every second in the browser, in the configured timezone. Shows the server time until the script runs."""
+    now = datetime.now(config_tz()).strftime("%H:%M:%S")
+    return f"<span class=clock data-clock='{esc(config.TZ)}'>{now}</span>"
+
+
 def page(title: str, body: str, refresh: int = 0, active: str = "", nav: bool = True) -> HTMLResponse:
     s = store.get_settings()
     meta = f"<meta http-equiv=refresh content={refresh}>" if refresh else ""
@@ -250,7 +264,7 @@ def page(title: str, body: str, refresh: int = 0, active: str = "", nav: bool = 
             f"{'<nav>' + links + '</nav>' if nav else ''}</header>")
     return HTMLResponse(f"<!doctype html><html><head><meta charset=utf-8><meta name=theme-color content='#0b0e13'>{meta}"
                         f"<meta name=viewport content='width=device-width,initial-scale=1'><title>{esc(title)} · TradeAgent</title>"
-                        f"<style>{CSS}</style></head><body>{head}{banner}<main>{body}</main></body></html>")
+                        f"<style>{CSS}</style></head><body>{head}{banner}<main>{body}</main>{CLOCK_JS}</body></html>")
 
 
 def card(title: str, inner: str, cls: str = "c12", right: str = "") -> str:
@@ -486,7 +500,7 @@ def dashboard():
                      f"<p class=muted>Instant and free: no AI analysis. Follows the current mode, limits and kill switch. "
                      f"Never reaches eToro.</p>", "c3") if config.DRY_RUN else ""
     body = ("<div class=layout>"
-            + card("Portfolio", port, "c12")
+            + card("Portfolio", port, "c12", right=live_clock())
             + card("Watchlist", markets_card(s), "c12", f"<span class=muted>{len(policy.parse_watchlist(s['watchlist']))} markets</span>")
             + card("Waiting for you", table(prow), "c6",
                    f"<span class='pill {'warn' if pend else ''}'>{len(pend)}</span>")

@@ -580,6 +580,22 @@ def test_watchlist_last_refreshed_per_row(eng, monkeypatch):
     assert web.fetched_cell(None) == ""
 
 
+def test_portfolio_has_live_clock(eng, monkeypatch):
+    engine, store, sent, fs, rating = eng
+    from fastapi.testclient import TestClient
+    from app import web
+    importlib.reload(web)
+    monkeypatch.setattr(web.sched, "start", lambda: None)
+    with TestClient(web.app) as c:
+        page = c.get("/").text
+        assert page.count("data-clock=") == 1
+        assert f"data-clock='{web.config.TZ}'" in page
+        h2 = page[page.index("Portfolio"):page.index("</h2>", page.index("Portfolio"))]
+        assert "<span class=right><span class=clock" in h2              # in the card's top-right slot
+        assert "setInterval(tick,1000)" in page                         # ticks every second in the browser
+        assert "data-clock" not in c.get("/logs").text.split("<main>")[1].split("</main>")[0]
+
+
 def test_pages_layout_logs_control_and_portfolio(eng, monkeypatch):
     engine, store, sent, fs, rating = eng
     from fastapi.testclient import TestClient
