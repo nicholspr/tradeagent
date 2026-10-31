@@ -384,10 +384,11 @@ def markets_card(s: dict) -> str:
 
 
 def portfolio_card(book, s: dict, sparks: dict | None = None, info: dict | None = None,
-                   fetched: float | None = None) -> str:
+                   fetched: float | None = None, intraday: dict | None = None) -> str:
     cap = float(s.get("max_position_pct") or 0)
     total = book.total_usd or 0
     sparks = sparks or {}
+    intraday = intraday or {}
     info = info or {}
     when, when_title = "", ""
     if fetched:
@@ -426,13 +427,19 @@ def portfolio_card(book, s: dict, sparks: dict | None = None, info: dict | None 
         name = f"<br><span class=muted>{esc(meta['name'])}</span>" if meta.get("name") else ""
         stamp = (f"<span class=muted title='{esc(when_title)}{'; market closed, so the price is the last close' if meta.get('open') is False else ''}'>{when}</span>"
                  if when else "")
+        mins = intraday.get(h.instrument_id) or []
+        hour_note = ("Last 60 minutes, one-minute prices" if meta.get("open") is not False
+                     else "Market closed: its final hour of trading")
+        hour = (f"<span title='{hour_note}'>{sparkline(mins, mins[-1] >= mins[0])}</span>"
+                if len(mins) >= 2 else "<span class=muted>n/a</span>")
         rows += (f"<tr><td><div class=mk>{logo_img(meta.get('logo'))}<div><b>{esc(h.symbol)}</b>{mk}{flag}{name}</div></div></td>"
-                 f"<td>{('$' + fmt_price(price)) if price else ''}{pnl}</td><td class=sparkcell>{trend}</td>"
+                 f"<td>{('$' + fmt_price(price)) if price else ''}{pnl}</td><td class=sparkcell>{hour}</td>"
+                 f"<td class=sparkcell>{trend}</td>"
                  f"<td>{h.units:.6g}</td><td>${h.value_usd:,.2f}</td>"
                  f"<td class=barcell>{alloc_bar(share, cap)}<span class=muted>{share:.0f}%</span></td>"
                  f"<td>{'$%.2f' % h.pending_usd if h.pending_usd else ''}</td><td>{stamp}</td></tr>")
     cash_share = book.cash_usd / total * 100 if total else 0
-    rows += (f"<tr><td><div class=mk><span class=logo></span><span class=muted>Cash</span></div></td><td></td><td></td><td></td><td>${book.cash_usd:,.2f}</td>"
+    rows += (f"<tr><td><div class=mk><span class=logo></span><span class=muted>Cash</span></div></td><td></td><td></td><td></td><td></td><td>${book.cash_usd:,.2f}</td>"
              f"<td class=barcell>{alloc_bar(cash_share, 0)}<span class=muted>{cash_share:.0f}%</span></td><td></td>"
              f"<td><span class=muted title='{esc(when_title)}'>{when}</span></td></tr>")
     note = ""
@@ -445,7 +452,7 @@ def portfolio_card(book, s: dict, sparks: dict | None = None, info: dict | None 
     return (f"<div class=stat><div><div class=muted>Total</div><div class=big>${book.total_usd:,.2f}</div></div>"
             f"<div><div class=muted>Cash</div><div class=big>${book.cash_usd:,.2f}</div></div>"
             f"<div><div class=muted>Holdings</div><div class=big>{sum(1 for h in holdings if h.units > 0)}</div></div></div>"
-            + table(rows, "<tr><th>Holding</th><th>Price <span class=muted>(gain/loss vs cost)</span></th><th>30 days</th><th>Units</th><th>Value</th><th>Share of portfolio</th><th>Pending buys</th><th>Last refreshed</th></tr>") + note
+            + table(rows, "<tr><th>Holding</th><th>Price <span class=muted>(gain/loss vs cost)</span></th><th>60 min</th><th>30 days</th><th>Units</th><th>Value</th><th>Share of portfolio</th><th>Pending buys</th><th>Last refreshed</th></tr>") + note
             + (f"<p class=muted>Prices refresh every {markets.PORTFOLIO_OPEN_SECONDS} seconds while a market you hold is open, "
                f"and every {markets.PORTFOLIO_CLOSED_SECONDS // 60} minutes when they are all closed.</p>" if fetched else ""))
 
@@ -477,7 +484,7 @@ def dashboard():
         ec = engine.client()
         snap = markets.portfolio_snapshot(ec)
         refresh = markets.snapshot_ttl(snap["any_open"])
-        port = portfolio_card(snap["book"], s, snap["sparks"], snap["info"], snap["fetched"])
+        port = portfolio_card(snap["book"], s, snap["sparks"], snap["info"], snap["fetched"], snap.get("intraday"))
     except Exception as e:  # noqa: BLE001
         port = f"<p class=muted>Portfolio unavailable: {esc(str(e))}</p>"
 

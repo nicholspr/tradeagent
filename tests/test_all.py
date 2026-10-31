@@ -872,6 +872,51 @@ def test_portfolio_refresh_follows_market_state(eng, monkeypatch):
         assert "http-equiv=refresh content=900" in c.get("/").text
 
 
+def test_portfolio_hourly_sparkline(eng, monkeypatch):
+    engine, store, sent, fs, rating = eng
+    from app import web, markets, etoro
+    from app.etoro import Book, Holding
+    importlib.reload(markets)
+    importlib.reload(web)
+
+    # client: one-minute candles, newest first from eToro, returned oldest first
+    seen = {}
+
+    class Resp(etoro.EtoroClient):
+        def __init__(self):
+            pass
+        def _req(self, method, path, **kw):
+            seen["path"] = path
+            return {"candles": [{"candles": [{"fromDate": f"2026-10-31T17:{m:02d}:00Z", "open": 1, "high": 2, "low": 1, "close": m}
+                                             for m in (3, 2, 1)]}]}
+    cs = Resp().intraday_candles(100000, 60)
+    assert seen["path"].endswith("/instruments/100000/history/candles/desc/OneMinute/60")
+    assert [c["close"] for c in cs] == [1, 2, 3]
+
+    class EC:
+        def intraday_candles(self, iid, minutes=60):
+            if iid == 3:
+                raise RuntimeError("down")
+            return [{"close": c} for c in ((5, 6, 7) if iid == 1 else (9, 8, 7))]
+    got = markets.holding_intraday(EC(), [1, 2, 3])
+    assert got == {1: [5, 6, 7], 2: [9, 8, 7], 3: []}
+
+    book = Book(cash_usd=0.0, total_usd=300.0, holdings={
+        i: Holding(i, n, units=1, value_usd=100.0, positions=[{"units": 1, "openRate": 90.0, "conv": 1.0}])
+        for i, n in ((1, "UP"), (2, "DOWN"), (3, "NONE"))})
+    info = {"UP": {"open": True}, "DOWN": {"open": False}, "NONE": {"open": True}}
+    html = web.portfolio_card(book, web.store.get_settings(), {}, info, None, got)
+    assert "<th>60 min</th>" in html and html.index("<th>60 min</th>") < html.index("<th>30 days</th>")
+    assert html.index("Price <span") < html.index("<th>60 min</th>")                 # directly after the price column
+    assert html.count("<svg class=spark") == 2                                       # UP and DOWN; NONE has no data
+    assert "title='Last 60 minutes, one-minute prices'" in html
+    assert "title='Market closed: its final hour of trading'" in html
+    assert "#22c55e" in html and "#ef4444" in html                                  # up is green, down is red
+    # header and rows have the same number of cells (Cash row included)
+    cells = [r.count("<td") for r in html.split("<tr>")[2:]]
+    assert len(set(cells)) == 1 and cells[0] == html.split("<tr>")[1].count("<th>")
+
+
 def test_settings_sections_and_inline_validation(eng, monkeypatch):
     engine, store, sent, fs, rating = eng
     from fastapi.testclient import TestClient

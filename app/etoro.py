@@ -134,7 +134,14 @@ class EtoroClient:
 
     def daily_candles(self, instrument_id: int, count: int = 365) -> list[dict]:
         """Daily candles, oldest first: [{date, open, high, low, close}]."""
-        data = self._req("GET", f"/api/v1/market-data/instruments/{int(instrument_id)}/history/candles/desc/OneDay/{int(count)}")
+        return self.candles(instrument_id, "OneDay", count)
+
+    def intraday_candles(self, instrument_id: int, minutes: int = 60) -> list[dict]:
+        """One-minute candles for the last `minutes` minutes of trading, oldest first."""
+        return self.candles(instrument_id, "OneMinute", minutes)
+
+    def candles(self, instrument_id: int, interval: str, count: int) -> list[dict]:
+        data = self._req("GET", f"/api/v1/market-data/instruments/{int(instrument_id)}/history/candles/desc/{interval}/{int(count)}")
         out = []
         for block in data.get("candles", []):
             for c in block.get("candles", []):

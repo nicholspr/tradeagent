@@ -184,6 +184,20 @@ def holding_sparks(ec, instrument_ids: list[int]) -> dict[int, list[float]]:
         return dict(pool.map(one, instrument_ids))
 
 
+def holding_intraday(ec, instrument_ids: list[int], minutes: int = 60) -> dict[int, list[float]]:
+    """Last `minutes` one-minute closes per instrument (for a closed market: its final hour of trading).
+    A failure just means no sparkline for that holding."""
+    def one(iid):
+        try:
+            return iid, [c["close"] for c in ec.intraday_candles(iid, minutes)]
+        except Exception:  # noqa: BLE001
+            return iid, []
+    if not instrument_ids:
+        return {}
+    with ThreadPoolExecutor(max_workers=min(6, len(instrument_ids))) as pool:
+        return dict(pool.map(one, instrument_ids))
+
+
 def _quote(ec, sym: str):
     """Cached (instrument_id, search item, candles) for a symbol, or the Exception if it failed."""
     def load():
@@ -244,8 +258,9 @@ def portfolio_snapshot(ec, now: float | None = None) -> dict:
     book = ec.book()
     live = [h for h in book.holdings.values() if h.units > 0]
     info = market_info(ec, [h.symbol for h in live], datetime.fromtimestamp(now, timezone.utc))
+    ids = [h.instrument_id for h in live]
     snap = {"book": book, "info": info, "fetched": now,
-            "sparks": holding_sparks(ec, [h.instrument_id for h in live]),
+            "sparks": holding_sparks(ec, ids), "intraday": holding_intraday(ec, ids),
             "any_open": any(v["open"] is not False for v in info.values()) if info else False}
     with _lock:
         _snap["v"] = snap
