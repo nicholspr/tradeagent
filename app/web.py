@@ -294,12 +294,18 @@ def sparkline(points: list[float], up: bool) -> str:
             f"<polyline points='{pts}' fill=none stroke='{col}' stroke-width=1.6 stroke-linejoin=round /></svg>")
 
 
+def logo_img(url: str | None) -> str:
+    if not url:
+        return "<span class=logo></span>"
+    return (f"<img class=logo src='{esc(url)}' alt='' loading=lazy referrerpolicy=no-referrer "
+            f"onerror=\"this.style.visibility='hidden'\">")
+
+
 def market_row(r: dict) -> str:
     if r.get("error"):
         return (f"<tr><td><b>{esc(r['symbol'])}</b></td><td colspan=6 class=muted>"
                 f"Market data unavailable: {esc(r['error'])}</td></tr>")
-    logo = (f"<img class=logo src='{esc(r['logo'])}' alt='' loading=lazy referrerpolicy=no-referrer "
-            f"onerror=\"this.style.visibility='hidden'\">" if r.get("logo") else "<span class=logo></span>")
+    logo = logo_img(r.get("logo"))
     closed = " <span class=pill title='Market is closed; prices are the last close'>closed</span>" if r.get("tradable") is False else ""
     pct, ab = r.get("change_pct"), r.get("change_abs")
     if pct is None:
@@ -352,11 +358,11 @@ def markets_card(s: dict) -> str:
               "Sentiment is the share of eToro investors holding long or short. Display only.</p>")
 
 
-def portfolio_card(book, s: dict, sparks: dict | None = None, states: dict | None = None) -> str:
+def portfolio_card(book, s: dict, sparks: dict | None = None, info: dict | None = None) -> str:
     cap = float(s.get("max_position_pct") or 0)
     total = book.total_usd or 0
     sparks = sparks or {}
-    states = states or {}
+    info = info or {}
     holdings = sorted(book.holdings.values(), key=lambda h: -h.value_usd)
     rows, warns = "", []
     for h in holdings:
@@ -377,15 +383,17 @@ def portfolio_card(book, s: dict, sparks: dict | None = None, states: dict | Non
             cls = "up" if diff >= 0 else "down"
             pnl = (f"<div class='chg {cls}'><small>{'▲' if diff >= 0 else '▼'} {'+' if diff >= 0 else '-'}${abs(diff):,.2f} "
                    f"({diff / cost * 100:+.2f}%)</small></div>")
+        meta = info.get(h.symbol) or {}
         mk = {True: " <span class='pill okp' title='Market is open'>open</span>",
-              False: " <span class=pill title='Market is closed; price is the last close'>closed</span>"}.get(states.get(h.symbol), "")
-        rows += (f"<tr><td><b>{esc(h.symbol)}</b>{mk}{flag}</td>"
+              False: " <span class=pill title='Market is closed; price is the last close'>closed</span>"}.get(meta.get("open"), "")
+        name = f"<br><span class=muted>{esc(meta['name'])}</span>" if meta.get("name") else ""
+        rows += (f"<tr><td><div class=mk>{logo_img(meta.get('logo'))}<div><b>{esc(h.symbol)}</b>{mk}{flag}{name}</div></div></td>"
                  f"<td>{('$' + fmt_price(price)) if price else ''}{pnl}</td><td class=sparkcell>{trend}</td>"
                  f"<td>{h.units:.6g}</td><td>${h.value_usd:,.2f}</td>"
                  f"<td class=barcell>{alloc_bar(share, cap)}<span class=muted>{share:.0f}%</span></td>"
                  f"<td>{'$%.2f' % h.pending_usd if h.pending_usd else ''}</td></tr>")
     cash_share = book.cash_usd / total * 100 if total else 0
-    rows += (f"<tr><td><span class=muted>Cash</span></td><td></td><td></td><td></td><td>${book.cash_usd:,.2f}</td>"
+    rows += (f"<tr><td><div class=mk><span class=logo></span><span class=muted>Cash</span></div></td><td></td><td></td><td></td><td>${book.cash_usd:,.2f}</td>"
              f"<td class=barcell>{alloc_bar(cash_share, 0)}<span class=muted>{cash_share:.0f}%</span></td><td></td></tr>")
     note = ""
     if warns:
@@ -427,8 +435,8 @@ def dashboard():
         book = ec.book()
         live = [h for h in book.holdings.values() if h.units > 0]
         sparks = markets.holding_sparks(ec, [h.instrument_id for h in live])
-        states = markets.market_states(ec, [h.symbol for h in live])
-        port = portfolio_card(book, s, sparks, states)
+        info = markets.market_info(ec, [h.symbol for h in live])
+        port = portfolio_card(book, s, sparks, info)
     except Exception as e:  # noqa: BLE001
         port = f"<p class=muted>Portfolio unavailable: {esc(str(e))}</p>"
 

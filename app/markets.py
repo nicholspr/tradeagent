@@ -198,16 +198,27 @@ def _quote(ec, sym: str):
     return _cached(("quote", sym), QUOTE_TTL, load)
 
 
-def market_states(ec, symbols: list[str], now: datetime | None = None) -> dict[str, bool | None]:
-    """symbol -> True open / False closed / None unknown, for the portfolio card."""
+def market_info(ec, symbols: list[str], now: datetime | None = None) -> dict[str, dict]:
+    """symbol -> {open: True/False/None, logo, name} for the portfolio card."""
     if not symbols:
         return {}
     with ThreadPoolExecutor(max_workers=min(6, len(symbols))) as pool:
         got = list(pool.map(lambda s: _quote(ec, s), symbols))
-    out: dict[str, bool | None] = {}
+    out: dict[str, dict] = {}
     for sym, f in zip(symbols, got):
-        out[sym] = None if isinstance(f, Exception) else session(sym, f[1].get("internalAssetClassName"), now)[0]
+        if isinstance(f, Exception):
+            out[sym] = {"open": None, "logo": None, "name": None}
+            continue
+        item = f[1]
+        out[sym] = {"open": session(sym, item.get("internalAssetClassName"), now)[0],
+                    "logo": item.get("logo50x50") or item.get("logo35x35"),
+                    "name": item.get("internalInstrumentDisplayName")}
     return out
+
+
+def market_states(ec, symbols: list[str], now: datetime | None = None) -> dict[str, bool | None]:
+    """symbol -> True open / False closed / None unknown."""
+    return {s: v["open"] for s, v in market_info(ec, symbols, now).items()}
 
 
 def watchlist_rows(ec, symbols: list[str]) -> list[dict]:

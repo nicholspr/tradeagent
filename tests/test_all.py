@@ -707,11 +707,15 @@ def test_portfolio_shows_price_and_sparkline(eng, monkeypatch):
     sparks = markets.holding_sparks(EC(), [1, 2])
     assert sparks[1] == [40, 45, 60] and sparks[2] == []
     html = web.portfolio_card(book, web.store.get_settings(), sparks)
-    html = web.portfolio_card(book, web.store.get_settings(), sparks, {"AAA": True, "BBB": False})
+    html = web.portfolio_card(book, web.store.get_settings(), sparks,
+                              {"AAA": {"open": True, "logo": "http://x/aaa.png", "name": "Triple A"}, "BBB": {"open": False}})
+    assert "<img class=logo src='http://x/aaa.png'" in html and "Triple A" in html
+    assert html.index("<img class=logo") < html.index("<b>AAA</b>")              # icon leads the row
     assert "<b>AAA</b> <span class='pill okp' title='Market is open'>open</span>" in html
     assert "<b>BBB</b> <span class=pill title='Market is closed" in html
-    assert "market is" not in web.portfolio_card(book, web.store.get_settings(), sparks, {}).lower().replace("market is open", "").replace("market is closed", "")  # unknown: no badge
-    assert ">open<" not in web.portfolio_card(book, web.store.get_settings(), sparks, {})
+    assert html.count("<span class=logo></span>") >= 2                           # BBB (no logo) and Cash use a placeholder
+    bare = web.portfolio_card(book, web.store.get_settings(), sparks, {})
+    assert ">open<" not in bare and ">closed<" not in bare                        # unknown: no badge
     from datetime import datetime, timezone
     class MC:
         def search_item(self, sym):
