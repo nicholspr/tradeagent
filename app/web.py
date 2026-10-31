@@ -468,13 +468,21 @@ def control_card(s: dict) -> str:
         return f"<option value={v} {'selected' if s['mode'] == v else ''}>{label}</option>"
 
     kill_on = s["kill_switch"] == "on"
+    u = engine.daily_usage()
     return (f"<form method=post action='{B}/mode' class=row><div class=grow><label>Mode</label><select name=mode>"
             f"{opt('signals', 'Signals only — never trades')}{opt('approval', 'Approval — I approve each trade')}"
             f"{opt('auto', 'Fully automatic — within limits')}</select></div><button>Set mode</button></form>"
             f"<form method=post action='{B}/kill' style='margin-top:14px'>"
             f"<input type=hidden name=value value={'off' if kill_on else 'on'}>"
             f"<button class={'sec' if kill_on else 'red'} style='width:100%'>"
-            f"{'Turn kill switch OFF' if kill_on else 'KILL SWITCH: stop all trading'}</button></form>")
+            f"{'Turn kill switch OFF' if kill_on else 'KILL SWITCH: stop all trading'}</button></form>"
+            f"<form method=post action='{B}/reset-daily' style='margin-top:14px' class=row "
+            f"onsubmit=\"return confirm('Reset the daily counters? This lets the agent spend and trade up to the daily limits again today.')\">"
+            f"<div class=grow><label>Daily limits used today</label>"
+            f"<div class=muted>${u['spent']:,.2f} of ${float(s['max_daily_usd'] or 0):,.2f} spent · "
+            f"{u['trades']} of {s['max_trades_per_day']} trades · {u['analyses']} of {s['analyses_per_day']} analyses</div>"
+            f"<div class=help>Per-holding cooldowns are not affected.</div></div>"
+            f"<button class=sec>Reset daily limits</button></form>")
 
 
 @app.get("/", response_class=HTMLResponse)
@@ -682,6 +690,12 @@ def save_keys(api_key: str = Form(""), user_key: str = Form("")):
 @app.post("/kill")
 def kill(value: str = Form(...)):
     store.set_setting("kill_switch", "on" if value == "on" else "off")
+    return back("/settings")
+
+
+@app.post("/reset-daily")
+def reset_daily():
+    engine.reset_daily_tracking()
     return back("/settings")
 
 

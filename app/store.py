@@ -23,6 +23,7 @@ DEFAULTS = {
     "allow_sells": "on",             # agent may propose closing positions
     "auto_sells": "off",             # in auto mode, sells still need approval unless on
     "approval_ttl_hours": "6",
+    "daily_reset_at": "",            # set by the Settings "Reset daily limits" button; not a form field
 }
 
 _lock = threading.RLock()

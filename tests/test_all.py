@@ -608,6 +608,35 @@ def test_watchlist_hourly_sparkline_and_price_as_of(eng, monkeypatch):
         assert {r.count("<td") for r in w.split("<tr>")[2:]} == {head.count("<th>")}   # one cell per column in every row
 
 
+def test_reset_daily_limits(eng, monkeypatch):
+    engine, store, sent, fs, rating = eng
+    from fastapi.testclient import TestClient
+    from app import web
+    importlib.reload(web)
+    monkeypatch.setattr(web.sched, "start", lambda: None)
+    store.set_setting("max_trades_per_day", "1")
+    store.set_setting("cooldown_days", "0")
+    pid = engine.analyse(policy.WatchItem("META", "META"))["pending"]
+    assert engine.decide(pid, approve=True)["executed"]
+    store.update_proposal(pid, executed=(datetime.now(timezone.utc) - timedelta(seconds=30)).isoformat(timespec="seconds"))
+    assert engine.daily_usage() == {"spent": 25.0, "trades": 1, "analyses": 1}
+    out = engine.analyse(policy.WatchItem("META", "META"))
+    assert "blocked" in out and "daily trade limit" in str(out)
+    with TestClient(web.app) as c:
+        page = c.get("/settings").text
+        assert "Reset daily limits" in page and "$25.00 of $50.00 spent" in page
+        assert c.get("/reset-daily").status_code == 405               # never reset by a plain link
+        assert c.post("/reset-daily", follow_redirects=False).status_code == 303
+    assert engine.daily_usage()["trades"] == 0
+    assert store.get_settings()["daily_reset_at"]
+    assert any("daily limits reset" in e["msg"] for e in store.events(5))
+    out = engine.analyse(policy.WatchItem("META", "META"))
+    assert "pending" in out                                           # allowed again after the reset
+    store.set_setting("cooldown_days", "3")
+    store.set_setting("max_trades_per_day", "5")
+    assert "cooldown" in str(engine.analyse(policy.WatchItem("META", "META")))   # cooldown is not reset
+
+
 def test_portfolio_has_live_clock(eng, monkeypatch):
     engine, store, sent, fs, rating = eng
     from fastapi.testclient import TestClient

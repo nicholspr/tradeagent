@@ -26,6 +26,25 @@ def _day_start_iso() -> str:
     return start.astimezone(timezone.utc).isoformat(timespec="seconds")
 
 
+def _tracking_start_iso() -> str:
+    """Start of the current daily-limit window: today's midnight, or a later manual reset."""
+    return max(_day_start_iso(), store.get_settings().get("daily_reset_at") or "")
+
+
+def daily_usage() -> dict:
+    since = _tracking_start_iso()
+    done = store.executed_since(since)
+    return {"spent": sum(p["amount_usd"] or 0 for p in done if p["action"] == "buy"),
+            "trades": len(done), "analyses": store.runs_since(since)}
+
+
+def reset_daily_tracking() -> str:
+    """Restart today's spend, trade and analysis counters from now. Per-instrument cooldowns are untouched."""
+    now = _utc_now().isoformat(timespec="seconds")
+    store.set_setting("daily_reset_at", now)
+    store.log("warn", "daily limits reset manually: spend, trade and analysis counters restart from now")
+    return now
+
 def token_for(pid: int, created: str) -> str:
     return hmac.new(config.APP_SECRET.encode(), f"{pid}:{created}".encode(), hashlib.sha256).hexdigest()[:32]
 
@@ -155,8 +174,9 @@ def _act(symbol, inst, book, s, rating, decision, run_id, prop, manual=False) ->
 
 def _limits(prop, inst, book, s, *, tradable: bool):
     h = book.holdings.get(inst["instrumentId"])
-    spent = sum(p["amount_usd"] or 0 for p in store.executed_since(_day_start_iso()) if p["action"] == "buy")
-    trades = len(store.executed_since(_day_start_iso()))
+    since = _tracking_start_iso()
+    spent = sum(p["amount_usd"] or 0 for p in store.executed_since(since) if p["action"] == "buy")
+    trades = len(store.executed_since(since))
     return policy.check_limits(
         prop, instrument_id=inst["instrumentId"], cash=book.cash_usd, portfolio_total=book.total_usd,
         holding_value=h.value_usd if h else 0.0, pending_usd=h.pending_usd if h else 0.0,
@@ -294,7 +314,7 @@ def scheduled_analysis(asset: str = "stock") -> None:
     s = store.get_settings()
     items = [i for i in policy.parse_watchlist(s["watchlist"]) if (i.asset_type == "crypto") == (asset == "crypto")]
     limit = int(float(s["analyses_per_day"] or 0))
-    done = store.runs_since(_day_start_iso())
+    done = store.runs_since(_tracking_start_iso())
     if not items:
         store.log("info", f"scheduled {asset} run: no {asset} entries in the watchlist")
         return
