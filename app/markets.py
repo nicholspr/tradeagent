@@ -184,14 +184,20 @@ def holding_sparks(ec, instrument_ids: list[int]) -> dict[int, list[float]]:
         return dict(pool.map(one, instrument_ids))
 
 
-def holding_intraday(ec, instrument_ids: list[int], minutes: int = 60) -> dict[int, list[float]]:
-    """Last `minutes` one-minute closes per instrument (for a closed market: its final hour of trading).
-    A failure just means no sparkline for that holding."""
+def holding_intraday(ec, instrument_ids: list[int], minutes: int = 60) -> dict[int, dict]:
+    """iid -> {closes: last `minutes` one-minute closes, asof: UTC timestamp the last candle ends}.
+    For a closed market that is its final hour of trading and the time of its last trade minute.
+    A failure just means no data for that holding."""
     def one(iid):
         try:
-            return iid, [c["close"] for c in ec.intraday_candles(iid, minutes)]
+            cs = ec.intraday_candles(iid, minutes)
+            asof = None
+            if cs:
+                end = datetime.fromisoformat(str(cs[-1]["date"]).replace("Z", "+00:00")).timestamp() + 60
+                asof = min(end, time.time())        # a minute still in progress has not ended yet
+            return iid, {"closes": [c["close"] for c in cs], "asof": asof}
         except Exception:  # noqa: BLE001
-            return iid, []
+            return iid, {"closes": [], "asof": None}
     if not instrument_ids:
         return {}
     with ThreadPoolExecutor(max_workers=min(6, len(instrument_ids))) as pool:

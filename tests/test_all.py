@@ -897,15 +897,29 @@ def test_portfolio_hourly_sparkline(eng, monkeypatch):
         def intraday_candles(self, iid, minutes=60):
             if iid == 3:
                 raise RuntimeError("down")
-            return [{"close": c} for c in ((5, 6, 7) if iid == 1 else (9, 8, 7))]
+            vals = (5, 6, 7) if iid == 1 else (9, 8, 7)
+            return [{"date": f"2026-10-30T19:{57 + i}:00Z", "close": c} for i, c in enumerate(vals)]
     got = markets.holding_intraday(EC(), [1, 2, 3])
-    assert got == {1: [5, 6, 7], 2: [9, 8, 7], 3: []}
+    last_trade_end = datetime(2026, 10, 30, 20, 0, tzinfo=timezone.utc).timestamp()   # last candle 19:59 ends 20:00
+    assert got[1] == {"closes": [5, 6, 7], "asof": last_trade_end}
+    assert got[2]["closes"] == [9, 8, 7] and got[3] == {"closes": [], "asof": None}
+
+    class Live:
+        def intraday_candles(self, iid, minutes=60):
+            return [{"date": "2026-10-31T17:35:00Z", "close": 1}]      # current minute, still in progress
+    monkeypatch.setattr(markets.time, "time", lambda: datetime(2026, 10, 31, 17, 35, 20, tzinfo=timezone.utc).timestamp())
+    assert markets.holding_intraday(Live(), [1])[1]["asof"] == datetime(2026, 10, 31, 17, 35, 20, tzinfo=timezone.utc).timestamp()
 
     book = Book(cash_usd=0.0, total_usd=300.0, holdings={
         i: Holding(i, n, units=1, value_usd=100.0, positions=[{"units": 1, "openRate": 90.0, "conv": 1.0}])
         for i, n in ((1, "UP"), (2, "DOWN"), (3, "NONE"))})
     info = {"UP": {"open": True}, "DOWN": {"open": False}, "NONE": {"open": True}}
     html = web.portfolio_card(book, web.store.get_settings(), {}, info, None, got)
+    assert "<th>Price as of</th>" in html and html.index("<th>Price as of</th>") < html.index("<th>Last refreshed</th>")
+    t = datetime.fromtimestamp(last_trade_end, web.config_tz())
+    assert f"Price as of {t.strftime('%Y-%m-%d %H:%M:%S %Z')}" in html
+    assert "market closed, so the price is the last trade" in html                   # DOWN is closed
+    assert html.count("Price as of 2026") == 2                                       # UP and DOWN; NONE has none
     assert "<th>60 min</th>" in html and html.index("<th>60 min</th>") < html.index("<th>30 days</th>")
     assert html.index("Price <span") < html.index("<th>60 min</th>")                 # directly after the price column
     assert html.count("<svg class=spark") == 2                                       # UP and DOWN; NONE has no data
