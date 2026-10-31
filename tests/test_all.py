@@ -534,6 +534,32 @@ def test_watchlist_market_rows_and_card(eng, monkeypatch):
         assert not orders(fs)
 
 
+def test_pages_layout_logs_control_and_portfolio(eng, monkeypatch):
+    engine, store, sent, fs, rating = eng
+    from fastapi.testclient import TestClient
+    from app import web
+    importlib.reload(web)
+    monkeypatch.setattr(web.sched, "start", lambda: None)
+    with TestClient(web.app) as c:
+        home = c.get("/").text
+        for gone in ("Recent calls", "Agent runs", ">Log<", "KILL SWITCH: stop all trading", "Set mode"):
+            assert gone not in home
+        assert "Portfolio" in home and "section class='card c12'><h2>Portfolio" in home
+        assert ">Logs</a>" in home
+        logs = c.get("/logs").text
+        assert "Recent calls" in logs and "Agent runs" in logs and "Full audit trail" in logs
+        st = c.get("/settings").text
+        assert "Control" in st and "KILL SWITCH: stop all trading" in st and "Set mode" in st
+        r = c.post("/kill", data={"value": "on"}, follow_redirects=False)
+        assert r.status_code == 303 and r.headers["location"].endswith("/settings")
+        assert store.get_settings()["kill_switch"] == "on"
+        assert "Turn kill switch OFF" in c.get("/settings").text
+        r = c.post("/mode", data={"mode": "signals"}, follow_redirects=False)
+        assert r.headers["location"].endswith("/settings") and store.get_settings()["mode"] == "signals"
+        bad = c.post("/settings", data={"watchlist": "META", "max_trade_usd": "abc"})
+        assert bad.status_code == 400 and "Turn kill switch OFF" in bad.text      # control still shown on validation errors
+
+
 def test_settings_sections_and_inline_validation(eng, monkeypatch):
     engine, store, sent, fs, rating = eng
     from fastapi.testclient import TestClient

@@ -125,7 +125,7 @@ input.invalid,textarea.invalid{border-color:#dc2626;box-shadow:0 0 0 2px #dc2626
 }
 """
 
-NAV = [("Overview", "/"), ("Opportunities", "/opportunities"), ("Settings", "/settings")]
+NAV = [("Overview", "/"), ("Opportunities", "/opportunities"), ("Logs", "/logs"), ("Settings", "/settings")]
 
 
 MODE_LABELS = {"signals": "Signals only", "approval": "Approval", "auto": "Automatic"}
@@ -359,6 +359,20 @@ def health():
     return {"ok": True, "env": config.ETORO_ENV, "mode": store.get_settings()["mode"]}
 
 
+def control_card(s: dict) -> str:
+    def opt(v, label):
+        return f"<option value={v} {'selected' if s['mode'] == v else ''}>{label}</option>"
+
+    kill_on = s["kill_switch"] == "on"
+    return (f"<form method=post action='{B}/mode' class=row><div class=grow><label>Mode</label><select name=mode>"
+            f"{opt('signals', 'Signals only — never trades')}{opt('approval', 'Approval — I approve each trade')}"
+            f"{opt('auto', 'Fully automatic — within limits')}</select></div><button>Set mode</button></form>"
+            f"<form method=post action='{B}/kill' style='margin-top:14px'>"
+            f"<input type=hidden name=value value={'off' if kill_on else 'on'}>"
+            f"<button class={'sec' if kill_on else 'red'} style='width:100%'>"
+            f"{'Turn kill switch OFF' if kill_on else 'KILL SWITCH: stop all trading'}</button></form>")
+
+
 @app.get("/", response_class=HTMLResponse)
 def dashboard():
     s = store.get_settings()
@@ -370,32 +384,9 @@ def dashboard():
 
     pend = store.proposals("pending", 20) + store.proposals("approved", 20)
     prow = "".join(queue_row(p, s) for p in pend) or "<tr><td class=muted>Nothing waiting.</td></tr>"
-    hist = "".join(
-        f"<tr><td>#{p['id']}</td><td>{p['created'][:16].replace('T', ' ')}</td><td><b>{esc(p['ticker'])}</b></td><td>{esc(p['rating'] or '')}</td>"
-        f"<td>{esc(engine._describe(p)) if p['action'] != 'none' else ''}</td><td>{status_pill(p['status'])}</td>"
-        f"<td class=muted>{esc((p['error'] or p['reason'] or '')[:120])}</td></tr>"
-        for p in store.proposals(None, 25)) or "<tr><td class=muted>None yet.</td></tr>"
-    runs = "".join(
-        f"<tr><td><a href='{B}/run/{r['id']}'>#{r['id']}</a></td><td>{r['started'][:16].replace('T', ' ')}</td><td><b>{esc(r['ticker'])}</b></td>"
-        f"<td>{rating_pill(r['rating'], r)}<br><span class=muted>{run_duration(r)}</span></td></tr>" for r in store.runs(15)) \
-        or "<tr><td class=muted>None yet.</td></tr>"
-    evs = "".join(f"<tr><td class=muted style='white-space:nowrap;width:1%'>{e['ts'][5:16].replace('T', ' ')}</td><td style='width:1%'>{e['level']}</td>"
-                  f"<td>{esc(e['msg'][:400])}</td></tr>" for e in store.events(40))
-
-    def opt(v, label):
-        return f"<option value={v} {'selected' if s['mode'] == v else ''}>{label}</option>"
-
     items = "".join(f"<option>{esc(i.symbol)}</option>" for i in policy.parse_watchlist(s["watchlist"]))
     active = active_runs()
     running = bool(active)
-    kill_on = s["kill_switch"] == "on"
-    control = (f"<form method=post action='{B}/mode' class=row><div class=grow><label>Mode</label><select name=mode>"
-               f"{opt('signals', 'Signals only — never trades')}{opt('approval', 'Approval — I approve each trade')}"
-               f"{opt('auto', 'Fully automatic — within limits')}</select></div><button>Set mode</button></form>"
-               f"<form method=post action='{B}/kill' style='margin-top:14px'>"
-               f"<input type=hidden name=value value={'off' if kill_on else 'on'}>"
-               f"<button class={'sec' if kill_on else 'red'} style='width:100%'>"
-               f"{'Turn kill switch OFF' if kill_on else 'KILL SWITCH: stop all trading'}</button></form>")
     run_card = (f"<form method=post action='{B}/run' class=row><div class=grow><select name=symbol>{items}</select></div>"
                 f"<button>Analyse</button></form>"
                 f"<p class=muted>Takes several minutes and costs roughly $0.50–$3 in Claude usage. Follows the current mode.</p>"
@@ -410,18 +401,35 @@ def dashboard():
                      f"<p class=muted>Instant and free: no AI analysis. Follows the current mode, limits and kill switch. "
                      f"Never reaches eToro.</p>", "c3") if config.DRY_RUN else ""
     body = ("<div class=layout>"
-            + card("Control", control, "c4")
-            + card("Portfolio", port, "c8")
+            + card("Portfolio", port, "c12")
             + card("Watchlist", markets_card(s), "c12", f"<span class=muted>{len(policy.parse_watchlist(s['watchlist']))} markets</span>")
             + card("Waiting for you", table(prow), "c6",
                    f"<span class='pill {'warn' if pend else ''}'>{len(pend)}</span>")
             + card("Run an analysis now", run_card, "c3" if config.DRY_RUN else "c6")
             + test_card
+            + "</div><p class=muted>Research tool output is not financial advice. Limits are enforced by code, not by the AI.</p>")
+    return page("Overview", body, refresh=30 if running else 0, active="Overview")
+
+
+@app.get("/logs", response_class=HTMLResponse)
+def logs_page():
+    hist = "".join(
+        f"<tr><td>#{p['id']}</td><td>{p['created'][:16].replace('T', ' ')}</td><td><b>{esc(p['ticker'])}</b></td><td>{esc(p['rating'] or '')}</td>"
+        f"<td>{esc(engine._describe(p)) if p['action'] != 'none' else ''}</td><td>{status_pill(p['status'])}</td>"
+        f"<td class=muted>{esc((p['error'] or p['reason'] or '')[:120])}</td></tr>"
+        for p in store.proposals(None, 25)) or "<tr><td class=muted>None yet.</td></tr>"
+    runs = "".join(
+        f"<tr><td><a href='{B}/run/{r['id']}'>#{r['id']}</a></td><td>{r['started'][:16].replace('T', ' ')}</td><td><b>{esc(r['ticker'])}</b></td>"
+        f"<td>{rating_pill(r['rating'], r)}<br><span class=muted>{run_duration(r)}</span></td></tr>" for r in store.runs(15)) \
+        or "<tr><td class=muted>None yet.</td></tr>"
+    evs = "".join(f"<tr><td class=muted style='white-space:nowrap;width:1%'>{e['ts'][5:16].replace('T', ' ')}</td><td style='width:1%'>{e['level']}</td>"
+                  f"<td>{esc(e['msg'][:400])}</td></tr>" for e in store.events(40))
+    body = ("<div class=layout>"
             + card("Recent calls", table(hist, "<tr><th>#</th><th>When</th><th>Symbol</th><th>Rating</th><th>Trade</th><th>Status</th><th>Note</th></tr>"), "c8")
             + card("Agent runs", table(runs), "c4")
             + card("Log", table(evs), "c12", f"<a class=muted href='{B}/audit'>Full audit trail / CSV</a>")
-            + "</div><p class=muted>Research tool output is not financial advice. Limits are enforced by code, not by the AI.</p>")
-    return page("Overview", body, refresh=30 if running else 0, active="Overview")
+            + "</div>")
+    return page("Logs", body, refresh=30 if active_runs() else 0, active="Logs")
 
 
 SETTING_SECTIONS = [
@@ -515,7 +523,8 @@ def settings_page(s: dict | None = None, errors: dict | None = None, status: int
             f"<label style='margin-top:12px'>Private key (x-user-key) — {keystate('etoro_user_key', config.ETORO_USER_KEY)}</label>"
             f"<textarea name=user_key rows=4 autocomplete=off placeholder='paste the long private key; leave blank to keep'></textarea>"
             f"<p><button>Save keys</button></p><p class=muted>Stored on your server only; never shown again.</p></form>")
-    body = "<div class=layout>" + card("Limits and schedule", limits, "c8") + card("eToro connection", keys, "c4") + "</div>"
+    body = ("<div class=layout>" + card("Control", control_card(s), "c12")
+            + card("Limits and schedule", limits, "c8") + card("eToro connection", keys, "c4") + "</div>")
     resp = page("Settings", body, active="Settings")
     resp.status_code = status
     return resp
@@ -544,7 +553,7 @@ def set_mode(mode: str = Form(...)):
     if mode not in ("signals", "approval", "auto"):
         raise HTTPException(400, "bad mode")
     store.set_setting("mode", mode)
-    return back()
+    return back("/settings")
 
 
 @app.post("/keys")
@@ -559,7 +568,7 @@ def save_keys(api_key: str = Form(""), user_key: str = Form("")):
 @app.post("/kill")
 def kill(value: str = Form(...)):
     store.set_setting("kill_switch", "on" if value == "on" else "off")
-    return back()
+    return back("/settings")
 
 
 NUMERIC = {"analyses_per_day", "max_trade_usd", "max_daily_usd", "max_trades_per_day", "cash_buffer_usd",
