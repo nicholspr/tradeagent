@@ -129,6 +129,13 @@ def dashboard():
     items = "".join(f"<option>{esc(i.symbol)}</option>" for i in policy.parse_watchlist(s["watchlist"]))
 
     running = any(not r["finished"] for r in store.runs(5))
+    test_card = (f"<h2>Test tools <span class=pill>test mode only</span></h2><div class=card>"
+                 f"<form method=post action='{B}/test-trade' style='display:flex;gap:8px;flex-wrap:wrap'>"
+                 f"<select name=symbol style='max-width:160px'>{items}</select>"
+                 f"<select name=action style='max-width:160px'><option value=buy>Buy</option>"
+                 f"<option value=sell>Sell half</option></select><button>Create test trade</button></form>"
+                 f"<p class=muted>Instant and free: no AI analysis. Follows the current mode, limits and kill switch. "
+                 f"Never reaches eToro.</p></div>") if config.DRY_RUN else ""
     body = f"""
 <h1>TradeAgent <span class='pill {env_cls}'>{config.ETORO_ENV.upper()} account</span>
 {' <span class=pill>DRY RUN</span>' if config.DRY_RUN else ''}
@@ -150,6 +157,7 @@ def dashboard():
 <h2>Run an analysis now</h2><div class=card><form method=post action='{B}/run' style='display:flex;gap:8px'>
 <select name=symbol>{items}</select><button>Analyse</button></form>
 <p class=muted>Takes several minutes and costs roughly $0.50–$3 in Claude usage. Follows the current mode.</p></div>
+{test_card}
 <h2>Limits and schedule</h2><div class=card><form method=post action='{B}/settings'><div class=grid>{form}</div>
 <p><button>Save settings</button></p></form></div>
 <h2>Recent calls</h2><div class=card><table>{hist}</table></div>
@@ -228,6 +236,17 @@ def run_now(symbol: str = Form(...)):
         raise HTTPException(404, "not in watchlist")
     threading.Thread(target=engine.analyse, args=(item,), kwargs={"manual": True}, daemon=True).start()
     store.log("info", f"manual analysis of {item.symbol} started")
+    return back()
+
+
+@app.post("/test-trade")
+def test_trade(symbol: str = Form(...), action: str = Form("buy")):
+    if not config.DRY_RUN:
+        raise HTTPException(403, "test trades only in test mode")
+    try:
+        engine.create_test(symbol.upper(), "buy" if action == "buy" else "sell")
+    except Exception as e:  # noqa: BLE001
+        store.log("error", f"test trade failed: {e}")
     return back()
 
 

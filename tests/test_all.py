@@ -272,3 +272,20 @@ def test_dashboard_autorefresh_while_running(eng, monkeypatch):
         assert "http-equiv=refresh content=30" in c.get("/").text
         store.finish_run(rid, "Hold", "x")
         assert "http-equiv=refresh" not in c.get("/").text
+
+
+def test_create_test_trade_only_in_dry_run(eng, monkeypatch):
+    engine, store, sent, fs, rating = eng
+    from app import config
+    assert "error" in engine.create_test("META", "buy")          # DRY_RUN off -> refused
+    monkeypatch.setattr(config, "DRY_RUN", True)
+    out = engine.create_test("META", "buy")
+    p = store.get_proposal(out["pending"])
+    assert p["rating"] == "Buy (TEST)" and p["run_id"] is None and p["amount_usd"] == 25
+    res = engine.decide(p["id"], approve=True)
+    assert res["executed"] and res["orders"] == ["dry-run"] and not orders(fs)   # nothing sent
+    assert any("TEST" in t for k, t in sent if k == "sms")
+    store.set_setting("mode", "auto")
+    store.set_setting("cooldown_days", "0")
+    out = engine.create_test("META", "sell")
+    assert "pending" in out                                       # auto mode: sells still need approval

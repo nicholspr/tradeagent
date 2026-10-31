@@ -87,24 +87,28 @@ def _analyse(item: policy.WatchItem, *, manual: bool) -> dict:
     hv, hpos, hpend = (h.value_usd, h.positions, h.pending_usd) if h else (0.0, [], 0.0)
     prop = policy.propose(rating, holding_value=hv, holding_positions=hpos, pending_usd=hpend,
                           cash=book.cash_usd, portfolio_total=book.total_usd, s=s)
-    summary = _first_lines(decision)
-    base = {"run_id": run_id, "ticker": item.symbol, "instrument_id": inst["instrumentId"],
+    return _act(item.symbol, inst, book, s, rating, decision, run_id, prop, manual)
+
+
+def _act(symbol, inst, book, s, rating, decision, run_id, prop, manual=False) -> dict:
+    """Route a proposal by mode: signal, approval request, or automatic execution."""
+    base = {"run_id": run_id, "ticker": symbol, "instrument_id": inst["instrumentId"],
             "action": prop.action, "amount_usd": prop.amount_usd, "units": prop.units,
             "position_ids": prop.position_ids, "rating": rating, "mode": s["mode"]}
 
     if prop.action == "none":
-        store.log("info", f"{item.symbol}: {prop.reason}")
+        store.log("info", f"{symbol}: {prop.reason}")
         if manual or rating.lower() not in ("hold",):
-            notify.email(f"{item.symbol}: {rating}", f"{prop.reason}\n\n{decision}\n\n{config.PUBLIC_BASE_URL}/run/{run_id}")
+            notify.email(f"{symbol}: {rating}", f"{prop.reason}\n\n{decision}\n\n{config.PUBLIC_BASE_URL}/run/{run_id}")
         return {"rating": rating, "action": "none"}
 
     # Size against limits now (tradable assumed; re-checked at execution time).
     sized, blocks = _limits(prop, inst, book, s, tradable=True)
     if sized is None:
         pid = store.add_proposal({**base, "status": "blocked", "reason": "; ".join(blocks)})
-        msg = f"{item.symbol}: agent says {rating}, blocked by limits: {'; '.join(blocks)}"
+        msg = f"{symbol}: agent says {rating}, blocked by limits: {'; '.join(blocks)}"
         store.log("info", msg)
-        notify.email(f"{item.symbol}: {rating} (blocked)", f"{msg}\n\n{decision}")
+        notify.email(f"{symbol}: {rating} (blocked)", f"{msg}\n\n{decision}")
         return {"rating": rating, "blocked": blocks, "proposal": pid}
 
     base.update(amount_usd=sized.amount_usd, units=sized.units, position_ids=sized.position_ids)
@@ -140,6 +144,24 @@ def _limits(prop, inst, book, s, *, tradable: bool):
         holding_value=h.value_usd if h else 0.0, pending_usd=h.pending_usd if h else 0.0,
         spent_today=spent, trades_today=trades, last_trade_iso=store.last_executed_for(inst["instrumentId"]),
         tradable=tradable, s=s)
+
+
+def create_test(symbol: str, action: str) -> dict:
+    """Free, AI-free test proposal that follows the current mode. Test mode (DRY_RUN) only."""
+    if not config.DRY_RUN:
+        return {"error": "test trades are only allowed while DRY_RUN=true"}
+    s = store.get_settings()
+    ec = client()
+    inst = ec.find_instrument(symbol)
+    book = ec.book()
+    h = book.holdings.get(inst["instrumentId"])
+    rating = "Buy" if action == "buy" else "Underweight"
+    prop = policy.propose(rating, holding_value=h.value_usd if h else 0.0,
+                          holding_positions=h.positions if h else [], pending_usd=h.pending_usd if h else 0.0,
+                          cash=book.cash_usd, portfolio_total=book.total_usd, s=s)
+    store.log("info", f"TEST trade created: {symbol} {rating}")
+    return _act(symbol, inst, book, s, f"{rating} (TEST)", "Test trade created from the dashboard; no AI analysis was run.",
+                None, prop, manual=True)
 
 
 # ---------------------------------------------------------------- execution
