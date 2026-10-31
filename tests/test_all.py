@@ -234,3 +234,27 @@ def test_web_approval_page_requires_token(eng, monkeypatch):
         assert "Order placed" in r.text and len(orders(fs)) == 1
         assert c.get("/").status_code == 200
         assert c.post("/mode", data={"mode": "yolo"}).status_code == 400
+
+
+def test_dashboard_keys_override_env(eng, monkeypatch):
+    engine, store, sent, fs, rating = eng
+    from fastapi.testclient import TestClient
+    from app import web, etoro
+    importlib.reload(web)
+    monkeypatch.setattr(web.sched, "start", lambda: None)
+    long_key = "eyJ" + "x" * 600
+    with TestClient(web.app) as c:
+        r = c.post("/keys", data={"api_key": "PUB123", "user_key": f"  {long_key[:300]}\n{long_key[300:]} "})
+        assert r.status_code == 200
+        page = c.get("/").text
+        assert long_key not in page and "603 chars" in page
+    ec = etoro.EtoroClient()
+    assert ec.api_key == "PUB123" and ec.user_key == long_key     # whitespace/newlines stripped
+
+
+def test_split_env_user_key(monkeypatch):
+    monkeypatch.setenv("ETORO_USER_KEY", "abc")
+    monkeypatch.setenv("ETORO_USER_KEY_2", "def")
+    from app import config
+    importlib.reload(config)
+    assert config.ETORO_USER_KEY == "abcdef"

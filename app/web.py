@@ -47,7 +47,7 @@ async def lifespan(_app):
         sched.shutdown(wait=False)
 
 
-app = FastAPI(lifespan=lifespan, root_path=config.ROOT_PATH)
+app = FastAPI(lifespan=lifespan)
 B = config.ROOT_PATH  # prefix for links in pages
 esc = html.escape
 
@@ -139,6 +139,10 @@ def dashboard():
 <input type=hidden name=value value={'off' if s['kill_switch']=='on' else 'on'}>
 <button class={'sec' if s['kill_switch']=='on' else 'red'}>{'Turn kill switch OFF' if s['kill_switch']=='on' else 'KILL SWITCH: stop all trading'}</button></form></div>
 <h2>Portfolio</h2><div class=card>{port}</div>
+<h2>eToro connection</h2><div class=card><form method=post action='{B}/keys'><div class=grid>
+<div><label>Public Key (x-api-key) — {keystate('etoro_api_key', config.ETORO_API_KEY)}</label><input name=api_key type=password autocomplete=off placeholder='leave blank to keep'></div>
+<div><label>Private key (x-user-key) — {keystate('etoro_user_key', config.ETORO_USER_KEY)}</label><textarea name=user_key rows=3 autocomplete=off placeholder='paste the long private key; leave blank to keep'></textarea></div>
+</div><p><button>Save keys</button> <span class=muted>Stored on your server only; never shown again.</span></p></form></div>
 <h2>Waiting for you</h2><div class=card><table>{prow}</table></div>
 <h2>Run an analysis now</h2><div class=card><form method=post action='{B}/run' style='display:flex;gap:8px'>
 <select name=symbol>{items}</select><button>Analyse</button></form>
@@ -152,6 +156,15 @@ def dashboard():
     return page("TradeAgent", body)
 
 
+def keystate(name: str, env_value: str) -> str:
+    v = store.get_secret(name)
+    if v:
+        return f"saved on dashboard (…{esc(v[-4:])}, {len(v)} chars)"
+    if env_value:
+        return f"from Hostinger settings (…{esc(env_value[-4:])})"
+    return "not set"
+
+
 def back() -> RedirectResponse:
     return RedirectResponse(f"{B}/", status_code=303)
 
@@ -161,6 +174,15 @@ def set_mode(mode: str = Form(...)):
     if mode not in ("signals", "approval", "auto"):
         raise HTTPException(400, "bad mode")
     store.set_setting("mode", mode)
+    return back()
+
+
+@app.post("/keys")
+def save_keys(api_key: str = Form(""), user_key: str = Form("")):
+    if api_key.strip():
+        store.set_secret("etoro_api_key", api_key)
+    if user_key.strip():
+        store.set_secret("etoro_user_key", user_key)
     return back()
 
 

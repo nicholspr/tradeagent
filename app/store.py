@@ -55,6 +55,7 @@ def init() -> None:
                 id INTEGER PRIMARY KEY AUTOINCREMENT, run_id INTEGER, ticker TEXT, instrument_id INTEGER,
                 action TEXT, amount_usd REAL, units REAL, position_ids TEXT, rating TEXT, reason TEXT,
                 status TEXT, mode TEXT, created TEXT, decided TEXT, executed TEXT, order_ref TEXT, error TEXT);
+            CREATE TABLE IF NOT EXISTS secrets (key TEXT PRIMARY KEY, value TEXT, updated TEXT);
             CREATE TABLE IF NOT EXISTS events (id INTEGER PRIMARY KEY AUTOINCREMENT, ts TEXT, level TEXT, msg TEXT);
             """
         )
@@ -177,3 +178,24 @@ def last_executed_for(instrument_id: int) -> str | None:
         r = c.execute("SELECT executed FROM proposals WHERE status='executed' AND instrument_id=? "
                       "ORDER BY executed DESC LIMIT 1", (instrument_id,)).fetchone()
         return r["executed"] if r else None
+
+
+SECRET_KEYS = {"etoro_api_key", "etoro_user_key"}
+
+
+def set_secret(key: str, value: str) -> None:
+    if key not in SECRET_KEYS:
+        raise KeyError(key)
+    with _lock, connect() as c:
+        c.execute("INSERT OR REPLACE INTO secrets(key, value, updated) VALUES (?, ?, ?)",
+                  (key, "".join(value.split()), _now()))
+    log("info", f"{key} updated from dashboard")
+
+
+def get_secret(key: str) -> str:
+    try:
+        with _lock, connect() as c:
+            r = c.execute("SELECT value FROM secrets WHERE key=?", (key,)).fetchone()
+        return r["value"] if r else ""
+    except sqlite3.OperationalError:
+        return ""

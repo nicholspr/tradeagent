@@ -3,6 +3,7 @@ services:
     build:
       context: https://github.com/nicholspr/tradeagent.git#main
       dockerfile: Dockerfile
+    pull_policy: build
     container_name: tradeagent
     restart: unless-stopped
     environment:

@@ -12,6 +12,15 @@ import requests
 from . import config
 
 
+def _stored(key: str) -> str:
+    """Key saved via the dashboard (no length limit), if any."""
+    try:
+        from . import store
+        return store.get_secret(key)
+    except Exception:  # noqa: BLE001
+        return ""
+
+
 class EtoroError(RuntimeError):
     pass
 
@@ -35,8 +44,8 @@ class Book:
 
 class EtoroClient:
     def __init__(self, api_key=None, user_key=None, env=None, base=None, session=None):
-        self.api_key = api_key or config.ETORO_API_KEY
-        self.user_key = user_key or config.ETORO_USER_KEY
+        self.api_key = api_key or _stored("etoro_api_key") or config.ETORO_API_KEY
+        self.user_key = user_key or _stored("etoro_user_key") or config.ETORO_USER_KEY
         self.env = (env or config.ETORO_ENV).lower()
         self.base = (base or config.ETORO_BASE).rstrip("/")
         self.s = session or requests.Session()

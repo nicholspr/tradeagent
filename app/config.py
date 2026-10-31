@@ -8,7 +8,7 @@ def env(name: str, default: str = "") -> str:
 
 
 ETORO_API_KEY = env("ETORO_API_KEY")
-ETORO_USER_KEY = env("ETORO_USER_KEY")
+ETORO_USER_KEY = "".join(env(n) for n in ("ETORO_USER_KEY", "ETORO_USER_KEY_2", "ETORO_USER_KEY_3", "ETORO_USER_KEY_4"))
 ETORO_ENV = env("ETORO_ENV", "demo").lower()          # "real" or "demo"
 ETORO_BASE = env("ETORO_BASE", "https://public-api.etoro.com")
 
