@@ -52,24 +52,32 @@ B = config.ROOT_PATH  # prefix for links in pages
 esc = html.escape
 
 CSS = """
-body{font-family:system-ui,-apple-system,Segoe UI,sans-serif;margin:0;background:#f6f7f9;color:#1d2330}
+:root{color-scheme:dark;--bg:#0f1218;--card:#171b23;--line:#262c37;--line2:#1f242e;--text:#e6e9ef;
+--muted:#8b93a3;--accent:#3b82f6;--accent-h:#2f6fd8;--chip:#232936;--red:#ef4444;--red-bg:#3a1618;--red-t:#fca5a5;
+--blue-bg:#14284a;--blue-t:#93c5fd;--input:#0f1218}
+body{font-family:system-ui,-apple-system,Segoe UI,sans-serif;margin:0;background:var(--bg);color:var(--text);line-height:1.45}
 main{max-width:960px;margin:0 auto;padding:16px}
-h1{font-size:20px;margin:8px 0}h2{font-size:16px;margin:20px 0 8px}
-.card{background:#fff;border:1px solid #e3e6ea;border-radius:10px;padding:14px;margin:10px 0}
-table{border-collapse:collapse;width:100%;font-size:13px}td,th{text-align:left;padding:6px;border-bottom:1px solid #eef0f2;vertical-align:top}
-.pill{display:inline-block;padding:2px 8px;border-radius:999px;font-size:12px;background:#eef1f5}
-.real{background:#fde2e1;color:#9b1c1c}.demo{background:#e1f0fd;color:#1c4f9b}.on{background:#fde2e1;color:#9b1c1c}
-button{border:0;border-radius:8px;padding:8px 12px;font-size:14px;cursor:pointer;background:#1d4ed8;color:#fff}
-button.sec{background:#e5e7eb;color:#111}button.red{background:#b91c1c}
-input,select,textarea{font-size:14px;padding:6px;border:1px solid #cfd4da;border-radius:6px;width:100%;box-sizing:border-box}
+h1{font-size:20px;margin:8px 0}h2{font-size:15px;margin:22px 0 8px;color:var(--muted);text-transform:uppercase;letter-spacing:.04em}
+a{color:var(--blue-t)}a:hover{color:#bfdbfe}
+.card{background:var(--card);border:1px solid var(--line);border-radius:12px;padding:14px;margin:10px 0}
+table{border-collapse:collapse;width:100%;font-size:13px}td,th{text-align:left;padding:7px 6px;border-bottom:1px solid var(--line2);vertical-align:top}
+th{color:var(--muted);font-weight:600}tr:hover td{background:#1b202a}
+.pill{display:inline-block;padding:2px 8px;border-radius:999px;font-size:12px;background:var(--chip);color:var(--text)}
+.real{background:var(--red-bg);color:var(--red-t)}.demo{background:var(--blue-bg);color:var(--blue-t)}.on{background:var(--red-bg);color:var(--red-t)}
+button{border:0;border-radius:8px;padding:8px 14px;font-size:14px;cursor:pointer;background:var(--accent);color:#fff}
+button:hover{background:var(--accent-h)}button.sec{background:var(--chip);color:var(--text);border:1px solid var(--line)}
+button.sec:hover{background:#2c3342}button.red{background:#b91c1c}button.red:hover{background:#991b1b}
+input,select,textarea{font-size:14px;padding:7px;border:1px solid var(--line);border-radius:8px;width:100%;box-sizing:border-box;
+background:var(--input);color:var(--text)}
+input:focus,select:focus,textarea:focus{outline:none;border-color:var(--accent);box-shadow:0 0 0 2px #3b82f633}
 .grid{display:grid;grid-template-columns:repeat(auto-fit,minmax(200px,1fr));gap:10px}
-label{font-size:12px;color:#555}.muted{color:#666;font-size:12px}pre{white-space:pre-wrap;font-size:13px}
+label{font-size:12px;color:var(--muted)}.muted{color:var(--muted);font-size:12px}pre{white-space:pre-wrap;font-size:13px}
 """
 
 
 def page(title: str, body: str, refresh: int = 0) -> HTMLResponse:
     meta = f"<meta http-equiv=refresh content={refresh}>" if refresh else ""
-    return HTMLResponse(f"<!doctype html><html><head><meta charset=utf-8>{meta}<meta name=viewport "
+    return HTMLResponse(f"<!doctype html><html><head><meta charset=utf-8><meta name=theme-color content='#0f1218'>{meta}<meta name=viewport "
                         f"content='width=device-width,initial-scale=1'><title>{esc(title)}</title>"
                         f"<style>{CSS}</style></head><body><main>{body}</main></body></html>")
 
