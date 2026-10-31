@@ -3,6 +3,7 @@
 Real and demo use the same host; trading and portfolio paths differ (ETORO_ENV).
 Only unleveraged long ("real asset") buys and closes of existing positions are used.
 """
+from datetime import datetime, timezone
 import time
 import uuid
 from dataclasses import dataclass, field
@@ -90,6 +91,27 @@ class EtoroClient:
                         "buyEnabled": bool(it.get("isBuyEnabled", True)),
                         "rate": it.get("currentRate"),
                         "assetClass": it.get("internalAssetClassName")}
+        return self._find_v2(symbol)
+
+    def _find_v2(self, symbol: str) -> dict:
+        """Fallback: the v1 search does not index some newer instruments (e.g. LSE UCITS ETFs
+        like IUCS.L). Look the symbol up directly, then judge tradability from rate freshness."""
+        data = self._req("GET", "/api/v2/market-data/instruments", params={"symbols": symbol})
+        for it in data.get("results", []):
+            if str(it.get("symbol", "")).upper() != symbol.upper():
+                continue
+            iid = int(it["instrumentId"])
+            self._symbols[iid] = it["symbol"]
+            r = self.rates([iid]).get(iid, {})
+            fresh = False
+            try:
+                ts = datetime.strptime(str(r.get("date", ""))[:19], "%Y-%m-%dT%H:%M:%S").replace(tzinfo=timezone.utc)
+                fresh = (datetime.now(timezone.utc) - ts).total_seconds() < 15 * 60
+            except ValueError:
+                pass
+            return {"instrumentId": iid, "symbol": it["symbol"], "name": it.get("displayName"),
+                    "tradable": fresh, "exchangeOpen": fresh, "buyEnabled": True,
+                    "rate": r.get("ask") or r.get("lastExecution"), "assetClass": it.get("type")}
         raise EtoroError(f"instrument {symbol!r} not found on eToro")
 
     def rates(self, instrument_ids: list[int]) -> dict[int, dict]:

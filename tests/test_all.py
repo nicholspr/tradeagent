@@ -317,3 +317,24 @@ def test_scheduled_run_logs_skip_and_start(eng):
     assert any("scheduled crypto run started: BTC" in e["msg"] for e in store.events(10))
     engine.scheduled_analysis("crypto")
     assert any("skipped: daily analysis limit reached (1 of 1" in e["msg"] for e in store.events(10))
+
+
+def test_find_instrument_v2_fallback():
+    from datetime import datetime, timezone
+    from app.etoro import EtoroClient
+
+    class S:
+        def request(self, method, url, params=None, **kw):
+            if "/search" in url:
+                return Resp(200, {"items": []})
+            if "/v2/market-data/instruments" in url:
+                return Resp(200, {"results": [{"instrumentId": 1037364, "symbol": "IUCS.L", "type": "ETF",
+                                               "displayName": "iShares Consumer Staples"}]})
+            if "/rates" in url:
+                now = datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%S.1234567Z")
+                return Resp(200, {"rates": [{"instrumentID": 1037364, "ask": 10.95, "date": now}]})
+            return Resp(404, {})
+
+    ec = EtoroClient(api_key="a", user_key="b", session=S())
+    inst = ec.find_instrument("iucs.l")
+    assert inst["instrumentId"] == 1037364 and inst["tradable"] and inst["rate"] == 10.95
