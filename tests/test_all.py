@@ -246,7 +246,7 @@ def test_dashboard_keys_override_env(eng, monkeypatch):
     with TestClient(web.app) as c:
         r = c.post("/keys", data={"api_key": "PUB123", "user_key": f"  {long_key[:300]}\n{long_key[300:]} "})
         assert r.status_code == 200
-        page = c.get("/").text
+        page = c.get("/settings").text
         assert long_key not in page and "603 chars" in page
     ec = etoro.EtoroClient()
     assert ec.api_key == "PUB123" and ec.user_key == long_key     # whitespace/newlines stripped

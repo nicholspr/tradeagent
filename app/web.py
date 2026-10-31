@@ -53,33 +53,75 @@ esc = html.escape
 
 CSS = """
 :root{color-scheme:dark;--bg:#0f1218;--card:#171b23;--line:#262c37;--line2:#1f242e;--text:#e6e9ef;
---muted:#8b93a3;--accent:#3b82f6;--accent-h:#2f6fd8;--chip:#232936;--red:#ef4444;--red-bg:#3a1618;--red-t:#fca5a5;
+--muted:#8b93a3;--accent:#3b82f6;--accent-h:#2f6fd8;--chip:#232936;--red-bg:#3a1618;--red-t:#fca5a5;
 --blue-bg:#14284a;--blue-t:#93c5fd;--input:#0f1218}
+*{box-sizing:border-box}
 body{font-family:system-ui,-apple-system,Segoe UI,sans-serif;margin:0;background:var(--bg);color:var(--text);line-height:1.45}
-main{max-width:960px;margin:0 auto;padding:16px}
-h1{font-size:20px;margin:8px 0}h2{font-size:15px;margin:22px 0 8px;color:var(--muted);text-transform:uppercase;letter-spacing:.04em}
 a{color:var(--blue-t)}a:hover{color:#bfdbfe}
-.card{background:var(--card);border:1px solid var(--line);border-radius:12px;padding:14px;margin:10px 0}
+header{position:sticky;top:0;z-index:10;background:#0b0e13ee;backdrop-filter:blur(6px);border-bottom:1px solid var(--line);
+display:flex;align-items:center;gap:16px;padding:0 20px;min-height:56px;flex-wrap:wrap}
+.brand{font-weight:700;font-size:18px;color:var(--text);text-decoration:none;white-space:nowrap}
+.pills{display:flex;gap:6px;flex-wrap:wrap}
+nav{display:flex;gap:4px;margin-left:auto}
+nav a{color:var(--muted);text-decoration:none;padding:16px 14px;border-bottom:2px solid transparent;font-size:14px;font-weight:600}
+nav a:hover{color:var(--text)}nav a.active{color:var(--text);border-bottom-color:var(--accent)}
+main{padding:20px;width:100%}
+.layout{display:grid;grid-template-columns:repeat(12,minmax(0,1fr));gap:16px;align-items:start}
+.c3{grid-column:span 3}.c4{grid-column:span 4}.c6{grid-column:span 6}.c8{grid-column:span 8}.c9{grid-column:span 9}.c12{grid-column:span 12}
+h1{font-size:20px;margin:0 0 12px}
+h2{font-size:13px;margin:0 0 12px;color:var(--muted);text-transform:uppercase;letter-spacing:.05em;
+display:flex;align-items:center;gap:8px;flex-wrap:wrap}
+h2 .right{margin-left:auto;text-transform:none;letter-spacing:0;font-weight:400}
+.card{background:var(--card);border:1px solid var(--line);border-radius:12px;padding:16px;min-width:0}
+.tbl{overflow-x:auto;-webkit-overflow-scrolling:touch}
 table{border-collapse:collapse;width:100%;font-size:13px}td,th{text-align:left;padding:7px 6px;border-bottom:1px solid var(--line2);vertical-align:top}
-th{color:var(--muted);font-weight:600}tr:hover td{background:#1b202a}
-.pill{display:inline-block;padding:2px 8px;border-radius:999px;font-size:12px;background:var(--chip);color:var(--text)}
+th{color:var(--muted);font-weight:600;white-space:nowrap}tr:hover td{background:#1b202a}
+.big{font-size:28px;font-weight:700}.stat{display:flex;gap:28px;flex-wrap:wrap;margin-bottom:12px}
+.pill{display:inline-block;padding:2px 8px;border-radius:999px;font-size:12px;background:var(--chip);color:var(--text);white-space:nowrap}
 .real{background:var(--red-bg);color:var(--red-t)}.demo{background:var(--blue-bg);color:var(--blue-t)}.on{background:var(--red-bg);color:var(--red-t)}
-button{border:0;border-radius:8px;padding:8px 14px;font-size:14px;cursor:pointer;background:var(--accent);color:#fff}
+button{border:0;border-radius:8px;padding:9px 14px;font-size:14px;cursor:pointer;background:var(--accent);color:#fff;min-height:38px;white-space:nowrap}
 button:hover{background:var(--accent-h)}button.sec{background:var(--chip);color:var(--text);border:1px solid var(--line)}
 button.sec:hover{background:#2c3342}button.red{background:#b91c1c}button.red:hover{background:#991b1b}
-input,select,textarea{font-size:14px;padding:7px;border:1px solid var(--line);border-radius:8px;width:100%;box-sizing:border-box;
-background:var(--input);color:var(--text)}
+input,select,textarea{font-size:14px;padding:8px;border:1px solid var(--line);border-radius:8px;width:100%;
+background:var(--input);color:var(--text);min-height:38px}
 input:focus,select:focus,textarea:focus{outline:none;border-color:var(--accent);box-shadow:0 0 0 2px #3b82f633}
-.grid{display:grid;grid-template-columns:repeat(auto-fit,minmax(200px,1fr));gap:10px}
-label{font-size:12px;color:var(--muted)}.muted{color:var(--muted);font-size:12px}pre{white-space:pre-wrap;font-size:13px}
+.row{display:flex;gap:8px;align-items:end;flex-wrap:wrap}.row>.grow{flex:1;min-width:160px}
+.fields{display:grid;grid-template-columns:repeat(auto-fill,minmax(220px,1fr));gap:12px}
+label{font-size:12px;color:var(--muted);display:block;margin-bottom:4px}.muted{color:var(--muted);font-size:12px}
+pre{white-space:pre-wrap;font-size:13px;margin:0}p{margin:10px 0 0}
+@media (max-width:1280px){.c3,.c4{grid-column:span 6}.c8,.c9{grid-column:span 12}}
+@media (max-width:760px){
+ header{padding:10px 12px 0;gap:8px}nav{margin-left:0;width:100%;overflow-x:auto}nav a{padding:10px 12px;flex:1;text-align:center}
+ main{padding:12px}.layout{gap:12px}.c3,.c4,.c6,.c8,.c9,.c12{grid-column:span 12}
+ input,select,textarea{font-size:16px}.big{font-size:24px}
+}
 """
 
+NAV = [("Overview", "/"), ("Settings", "/settings")]
 
-def page(title: str, body: str, refresh: int = 0) -> HTMLResponse:
+
+def page(title: str, body: str, refresh: int = 0, active: str = "", nav: bool = True) -> HTMLResponse:
+    s = store.get_settings()
     meta = f"<meta http-equiv=refresh content={refresh}>" if refresh else ""
-    return HTMLResponse(f"<!doctype html><html><head><meta charset=utf-8><meta name=theme-color content='#0f1218'>{meta}<meta name=viewport "
-                        f"content='width=device-width,initial-scale=1'><title>{esc(title)}</title>"
-                        f"<style>{CSS}</style></head><body><main>{body}</main></body></html>")
+    env_cls = "real" if config.ETORO_ENV == "real" else "demo"
+    pills = (f"<span class='pill {env_cls}'>{config.ETORO_ENV.upper()} account</span>"
+             + ("<span class=pill>TEST MODE</span>" if config.DRY_RUN else "")
+             + ("<span class='pill on'>KILL SWITCH ON</span>" if s.get("kill_switch") == "on" else ""))
+    links = "".join(f"<a href='{B}{u}' class='{'active' if n == active else ''}'>{n}</a>" for n, u in NAV) if nav else ""
+    head = (f"<header><a class=brand href='{B}/'>TradeAgent</a><div class=pills>{pills}</div>"
+            f"{'<nav>' + links + '</nav>' if nav else ''}</header>")
+    return HTMLResponse(f"<!doctype html><html><head><meta charset=utf-8><meta name=theme-color content='#0b0e13'>{meta}"
+                        f"<meta name=viewport content='width=device-width,initial-scale=1'><title>{esc(title)} · TradeAgent</title>"
+                        f"<style>{CSS}</style></head><body>{head}<main>{body}</main></body></html>")
+
+
+def card(title: str, inner: str, cls: str = "c12", right: str = "") -> str:
+    r = f"<span class=right>{right}</span>" if right else ""
+    return f"<section class='card {cls}'><h2>{title}{r}</h2>{inner}</section>"
+
+
+def table(rows: str, head: str = "") -> str:
+    return f"<div class=tbl><table>{head}{rows}</table></div>"
 
 
 @app.get("/health")
@@ -90,89 +132,101 @@ def health():
 @app.get("/", response_class=HTMLResponse)
 def dashboard():
     s = store.get_settings()
-    env_cls = "real" if config.ETORO_ENV == "real" else "demo"
     try:
         book = engine.client().book()
-        rows = "".join(f"<tr><td>{esc(h.symbol)}</td><td>${h.value_usd:,.2f}</td><td>{h.units:.6g}</td>"
+        rows = "".join(f"<tr><td><b>{esc(h.symbol)}</b></td><td>${h.value_usd:,.2f}</td>"
+                       f"<td>{h.value_usd / book.total_usd * 100 if book.total_usd else 0:.0f}%</td><td>{h.units:.6g}</td>"
                        f"<td>{'$%.2f' % h.pending_usd if h.pending_usd else ''}</td></tr>"
                        for h in sorted(book.holdings.values(), key=lambda h: -h.value_usd))
-        port = (f"<p><b>${book.total_usd:,.2f}</b> total · cash ${book.cash_usd:,.2f}</p>"
-                f"<table><tr><th>Holding</th><th>Value</th><th>Units</th><th>Pending buys</th></tr>{rows}</table>")
+        port = (f"<div class=stat><div><div class=muted>Total</div><div class=big>${book.total_usd:,.2f}</div></div>"
+                f"<div><div class=muted>Cash</div><div class=big>${book.cash_usd:,.2f}</div></div></div>"
+                + table(rows, "<tr><th>Holding</th><th>Value</th><th>Share</th><th>Units</th><th>Pending buys</th></tr>"))
     except Exception as e:  # noqa: BLE001
         port = f"<p class=muted>Portfolio unavailable: {esc(str(e))}</p>"
 
     pend = store.proposals("pending", 20) + store.proposals("approved", 20)
     prow = "".join(
-        f"<tr><td>#{p['id']}</td><td>{esc(p['ticker'])}</td><td>{esc(p['rating'] or '')}</td>"
-        f"<td>{esc(engine._describe(p))}</td><td>{p['status']}</td><td>"
-        + (f"<form method=post action='{B}/p/{p['id']}/{engine.token_for(p['id'], p['created'])}/approve' style=display:inline>"
-           f"<button>Approve</button></form> "
-           f"<form method=post action='{B}/p/{p['id']}/{engine.token_for(p['id'], p['created'])}/reject' style=display:inline>"
-           f"<button class=sec>Reject</button></form>" if p["status"] == "pending" else "queued until market opens")
-        + "</td></tr>" for p in pend) or "<tr><td class=muted>None</td></tr>"
+        f"<tr><td>#{p['id']}</td><td><b>{esc(p['ticker'])}</b></td><td>{esc(p['rating'] or '')}</td>"
+        f"<td>{esc(engine._describe(p))}</td><td>"
+        + (f"<div class=row><form method=post action='{B}/p/{p['id']}/{engine.token_for(p['id'], p['created'])}/approve'>"
+           f"<button>Approve</button></form>"
+           f"<form method=post action='{B}/p/{p['id']}/{engine.token_for(p['id'], p['created'])}/reject'>"
+           f"<button class=sec>Reject</button></form></div>" if p["status"] == "pending" else "queued until market opens")
+        + "</td></tr>" for p in pend) or "<tr><td class=muted>Nothing waiting.</td></tr>"
     hist = "".join(
-        f"<tr><td>#{p['id']}</td><td>{p['created'][:16]}</td><td>{esc(p['ticker'])}</td><td>{esc(p['rating'] or '')}</td>"
+        f"<tr><td>#{p['id']}</td><td>{p['created'][:16].replace('T', ' ')}</td><td><b>{esc(p['ticker'])}</b></td><td>{esc(p['rating'] or '')}</td>"
         f"<td>{esc(engine._describe(p)) if p['action'] != 'none' else ''}</td><td>{p['status']}</td>"
         f"<td class=muted>{esc((p['error'] or p['reason'] or '')[:120])}</td></tr>"
-        for p in store.proposals(None, 25))
+        for p in store.proposals(None, 25)) or "<tr><td class=muted>None yet.</td></tr>"
     runs = "".join(
-        f"<tr><td><a href='{B}/run/{r['id']}'>#{r['id']}</a></td><td>{r['started'][:16]}</td><td>{esc(r['ticker'])}</td>"
-        f"<td>{esc(r['rating'] or ('error' if r['error'] else 'running…'))}</td></tr>" for r in store.runs(15))
-    evs = "".join(f"<tr><td class=muted>{e['ts'][5:16]}</td><td>{e['level']}</td><td>{esc(e['msg'][:400])}</td></tr>"
-                  for e in store.events(40))
+        f"<tr><td><a href='{B}/run/{r['id']}'>#{r['id']}</a></td><td>{r['started'][:16].replace('T', ' ')}</td><td><b>{esc(r['ticker'])}</b></td>"
+        f"<td>{esc(r['rating'] or ('error' if r['error'] else 'running…'))}</td></tr>" for r in store.runs(15)) \
+        or "<tr><td class=muted>None yet.</td></tr>"
+    evs = "".join(f"<tr><td class=muted style='white-space:nowrap;width:1%'>{e['ts'][5:16].replace('T', ' ')}</td><td style='width:1%'>{e['level']}</td>"
+                  f"<td>{esc(e['msg'][:400])}</td></tr>" for e in store.events(40))
 
     def opt(v, label):
         return f"<option value={v} {'selected' if s['mode'] == v else ''}>{label}</option>"
 
-    fields = [("watchlist", "Watchlist (eToro symbol[=research ticker][@crypto])"),
-              ("analyses_per_day", "Analyses per day (LLM cost)"), ("schedule_time", "Stock run time (UK, weekdays)"),
+    items = "".join(f"<option>{esc(i.symbol)}</option>" for i in policy.parse_watchlist(s["watchlist"]))
+    running = any(not r["finished"] for r in store.runs(5))
+    kill_on = s["kill_switch"] == "on"
+    control = (f"<form method=post action='{B}/mode' class=row><div class=grow><label>Mode</label><select name=mode>"
+               f"{opt('signals', 'Signals only — never trades')}{opt('approval', 'Approval — I approve each trade')}"
+               f"{opt('auto', 'Fully automatic — within limits')}</select></div><button>Set mode</button></form>"
+               f"<form method=post action='{B}/kill' style='margin-top:14px'>"
+               f"<input type=hidden name=value value={'off' if kill_on else 'on'}>"
+               f"<button class={'sec' if kill_on else 'red'} style='width:100%'>"
+               f"{'Turn kill switch OFF' if kill_on else 'KILL SWITCH: stop all trading'}</button></form>")
+    run_card = (f"<form method=post action='{B}/run' class=row><div class=grow><select name=symbol>{items}</select></div>"
+                f"<button>Analyse</button></form>"
+                f"<p class=muted>Takes several minutes and costs roughly $0.50–$3 in Claude usage. Follows the current mode.</p>"
+                + ("<p class=muted>Analysis running: this page refreshes every 30 seconds.</p>" if running else ""))
+    test_card = card("Test tools <span class=pill>test mode only</span>",
+                     f"<form method=post action='{B}/test-trade' class=row>"
+                     f"<div class=grow><select name=symbol>{items}</select></div>"
+                     f"<div class=grow><select name=action><option value=buy>Buy</option><option value=sell>Sell half</option></select></div>"
+                     f"<button>Create test trade</button></form>"
+                     f"<p class=muted>Instant and free: no AI analysis. Follows the current mode, limits and kill switch. "
+                     f"Never reaches eToro.</p>", "c3") if config.DRY_RUN else ""
+    body = ("<div class=layout>"
+            + card("Control", control, "c4")
+            + card("Portfolio", port, "c8")
+            + card("Waiting for you", table(prow), "c6")
+            + card("Run an analysis now", run_card, "c3" if config.DRY_RUN else "c6")
+            + test_card
+            + card("Recent calls", table(hist, "<tr><th>#</th><th>When</th><th>Symbol</th><th>Rating</th><th>Trade</th><th>Status</th><th>Note</th></tr>"), "c8")
+            + card("Agent runs", table(runs), "c4")
+            + card("Log", table(evs), "c12", f"<a class=muted href='{B}/audit'>Full audit trail / CSV</a>")
+            + "</div><p class=muted>Research tool output is not financial advice. Limits are enforced by code, not by the AI.</p>")
+    return page("Overview", body, refresh=30 if running else 0, active="Overview")
+
+
+@app.get("/settings", response_class=HTMLResponse)
+def settings_page():
+    s = store.get_settings()
+    fields = [("analyses_per_day", "Analyses per day (LLM cost)"), ("schedule_time", "Stock run time (UK, weekdays)"),
               ("crypto_time", "Crypto run time (UK, daily)"), ("max_trade_usd", "Max per trade ($)"),
               ("max_daily_usd", "Max buys per day ($)"), ("max_trades_per_day", "Max trades per day"),
               ("cash_buffer_usd", "Cash to keep ($)"), ("max_position_pct", "Max % in one holding"),
               ("cooldown_days", "Days between trades per holding"), ("approval_ttl_hours", "Approval expiry (hours)")]
     form = "".join(f"<div><label>{esc(l)}</label><input name={k} value='{esc(s[k])}'></div>" for k, l in fields)
     for k, l in (("allow_sells", "Agent may propose sells"), ("auto_sells", "Auto mode may sell without approval")):
-        form += (f"<div><label>{l}</label><select name={k}><option {'selected' if s[k]=='on' else ''}>on</option>"
-                 f"<option {'selected' if s[k]!='on' else ''}>off</option></select></div>")
-    items = "".join(f"<option>{esc(i.symbol)}</option>" for i in policy.parse_watchlist(s["watchlist"]))
-
-    running = any(not r["finished"] for r in store.runs(5))
-    test_card = (f"<h2>Test tools <span class=pill>test mode only</span></h2><div class=card>"
-                 f"<form method=post action='{B}/test-trade' style='display:flex;gap:8px;flex-wrap:wrap'>"
-                 f"<select name=symbol style='max-width:160px'>{items}</select>"
-                 f"<select name=action style='max-width:160px'><option value=buy>Buy</option>"
-                 f"<option value=sell>Sell half</option></select><button>Create test trade</button></form>"
-                 f"<p class=muted>Instant and free: no AI analysis. Follows the current mode, limits and kill switch. "
-                 f"Never reaches eToro.</p></div>") if config.DRY_RUN else ""
-    body = f"""
-<h1>TradeAgent <span class='pill {env_cls}'>{config.ETORO_ENV.upper()} account</span>
-{' <span class=pill>DRY RUN</span>' if config.DRY_RUN else ''}
-{' <span class="pill on">KILL SWITCH ON</span>' if s['kill_switch']=='on' else ''}</h1>
-{'<p class=muted>Analysis running: this page refreshes every 30 seconds.</p>' if running else ''}
-<div class=card><form method=post action='{B}/mode' style='display:flex;gap:8px;align-items:end;flex-wrap:wrap'>
-<div style='flex:1;min-width:220px'><label>Mode</label><select name=mode>
-{opt('signals','Signals only — never trades')}{opt('approval','Approval — I approve each trade')}{opt('auto','Fully automatic — within limits')}
-</select></div><button>Set mode</button></form>
-<form method=post action='{B}/kill' style='margin-top:10px'>
-<input type=hidden name=value value={'off' if s['kill_switch']=='on' else 'on'}>
-<button class={'sec' if s['kill_switch']=='on' else 'red'}>{'Turn kill switch OFF' if s['kill_switch']=='on' else 'KILL SWITCH: stop all trading'}</button></form></div>
-<h2>Portfolio</h2><div class=card>{port}</div>
-<h2>eToro connection</h2><div class=card><form method=post action='{B}/keys'><div class=grid>
-<div><label>Public Key (x-api-key) — {keystate('etoro_api_key', config.ETORO_API_KEY)}</label><input name=api_key type=password autocomplete=off placeholder='leave blank to keep'></div>
-<div><label>Private key (x-user-key) — {keystate('etoro_user_key', config.ETORO_USER_KEY)}</label><textarea name=user_key rows=3 autocomplete=off placeholder='paste the long private key; leave blank to keep'></textarea></div>
-</div><p><button>Save keys</button> <span class=muted>Stored on your server only; never shown again.</span></p></form></div>
-<h2>Waiting for you</h2><div class=card><table>{prow}</table></div>
-<h2>Run an analysis now</h2><div class=card><form method=post action='{B}/run' style='display:flex;gap:8px'>
-<select name=symbol>{items}</select><button>Analyse</button></form>
-<p class=muted>Takes several minutes and costs roughly $0.50–$3 in Claude usage. Follows the current mode.</p></div>
-{test_card}
-<h2>Limits and schedule</h2><div class=card><form method=post action='{B}/settings'><div class=grid>{form}</div>
-<p><button>Save settings</button></p></form></div>
-<h2>Recent calls</h2><div class=card><table>{hist}</table></div>
-<h2>Agent runs</h2><div class=card><table>{runs}</table></div>
-<h2>Log <a class=muted href='{B}/audit'>full audit trail / CSV</a></h2><div class=card><table>{evs}</table></div>
-<p class=muted>Research tool output is not financial advice. Limits are enforced by code, not by the AI.</p>"""
-    return page("TradeAgent", body, refresh=30 if running else 0)
+        form += (f"<div><label>{l}</label><select name={k}><option {'selected' if s[k] == 'on' else ''}>on</option>"
+                 f"<option {'selected' if s[k] != 'on' else ''}>off</option></select></div>")
+    limits = (f"<form method=post action='{B}/settings'>"
+              f"<label>Watchlist (eToro symbol[=research ticker][@crypto], comma-separated)</label>"
+              f"<textarea name=watchlist rows=2>{esc(s['watchlist'])}</textarea>"
+              f"<div class=fields style='margin-top:12px'>{form}</div>"
+              f"<p><button>Save settings</button></p></form>")
+    keys = (f"<form method=post action='{B}/keys'>"
+            f"<label>Public Key (x-api-key) — {keystate('etoro_api_key', config.ETORO_API_KEY)}</label>"
+            f"<input name=api_key type=password autocomplete=off placeholder='leave blank to keep'>"
+            f"<label style='margin-top:12px'>Private key (x-user-key) — {keystate('etoro_user_key', config.ETORO_USER_KEY)}</label>"
+            f"<textarea name=user_key rows=4 autocomplete=off placeholder='paste the long private key; leave blank to keep'></textarea>"
+            f"<p><button>Save keys</button></p><p class=muted>Stored on your server only; never shown again.</p></form>")
+    body = "<div class=layout>" + card("Limits and schedule", limits, "c8") + card("eToro connection", keys, "c4") + "</div>"
+    return page("Settings", body, active="Settings")
 
 
 def keystate(name: str, env_value: str) -> str:
@@ -184,8 +238,8 @@ def keystate(name: str, env_value: str) -> str:
     return "not set"
 
 
-def back() -> RedirectResponse:
-    return RedirectResponse(f"{B}/", status_code=303)
+def back(to: str = "/") -> RedirectResponse:
+    return RedirectResponse(f"{B}{to}", status_code=303)
 
 
 @app.post("/mode")
@@ -202,7 +256,7 @@ def save_keys(api_key: str = Form(""), user_key: str = Form("")):
         store.set_secret("etoro_api_key", api_key)
     if user_key.strip():
         store.set_secret("etoro_user_key", user_key)
-    return back()
+    return back("/settings")
 
 
 @app.post("/kill")
@@ -233,7 +287,7 @@ async def save_settings(watchlist: str = Form(...), analyses_per_day: str = Form
     for k, v in vals.items():
         store.set_setting(k, v)
     schedule_jobs()
-    return back()
+    return back("/settings")
 
 
 @app.post("/run")
@@ -262,8 +316,8 @@ def test_trade(symbol: str = Form(...), action: str = Form("buy")):
 def audit_page():
     rows = "".join(f"<tr><td class=muted>{e['ts'][:19].replace('T', ' ')}</td><td>{esc(e['msg'])}</td></tr>"
                    for e in store.events(1000, level="audit"))
-    return page("Audit trail", f"<p><a href='{B}/'>← Dashboard</a> · <a href='{B}/audit.csv'>Download CSV</a></p>"
-                f"<h1>Audit trail</h1><p class=muted>Every proposal event, newest first (times UTC).</p>"
+    return page("Audit trail", f"<h1>Audit trail <a class=muted href='{B}/audit.csv'>Download CSV</a></h1>"
+                f"<p class=muted>Every proposal event, newest first (times UTC).</p>"
                 f"<div class=card><table>{rows or '<tr><td>None yet</td></tr>'}</table></div>")
 
 
@@ -285,7 +339,7 @@ def show_run(run_id: int):
     r = store.get_run(run_id)
     if not r:
         raise HTTPException(404)
-    return page(f"Run {run_id}", f"<p><a href='{B}/'>← Dashboard</a></p><h1>{esc(r['ticker'])} · {esc(r['rating'] or '')}</h1>"
+    return page(f"Run {run_id}", f"<h1>{esc(r['ticker'])} · {esc(r['rating'] or '')}</h1>"
                 f"<p class=muted>{r['started']} → {r['finished'] or 'running'}</p>"
                 f"<div class=card><pre>{esc(r['decision'] or r['error'] or '')}</pre></div>")
 
@@ -309,10 +363,10 @@ def review(pid: int, token: str):
                 f"<form method=post action='{B}/p/{pid}/{token}/reject'><button class=sec style='width:100%;padding:14px'>"
                 f"Reject</button></form>")
     env = config.ETORO_ENV.upper()
-    return page("Approve trade", f"<h1>{esc(engine._describe(p))}</h1><p><span class=pill>{env} account</span> "
+    return page("Approve trade", nav=False, body=f"<h1>{esc(engine._describe(p))}</h1><p><span class=pill>{env} account</span> "
                 f"<span class=pill>rating {esc(p['rating'] or '')}</span> <span class=pill>status {p['status']}</span></p>"
                 f"<div class=card>{acts or '<p>Already ' + p['status'] + '.</p>'}</div>"
-                f"<h2>Agents' decision</h2><div class=card><pre>{esc((run.get('decision') or '')[:8000])}</pre></div>")
+                f"<h2 style='margin-top:20px'>Agents' decision</h2><div class=card><pre>{esc((run.get('decision') or '')[:8000])}</pre></div>")
 
 
 @app.post("/p/{pid}/{token}/{action}", response_class=HTMLResponse)
@@ -329,5 +383,5 @@ def act(pid: int, token: str, action: str, request: Request):
     text = next((v for k, v in msg.items() if k in res), esc(str(res)))
     if config.DRY_RUN and "executed" in res:
         text = "Test mode: this would have been placed. Nothing was sent to eToro."
-    return page("Done", f"<h1>{esc(engine._describe(p))}</h1><div class=card><p>{text}</p>"
+    return page("Done", nav=False, body=f"<h1>{esc(engine._describe(p))}</h1><div class=card><p>{text}</p>"
                 f"<p class=muted>Status: {p['status']} {esc(p['error'] or '')}</p></div>")
