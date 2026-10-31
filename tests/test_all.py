@@ -379,6 +379,37 @@ def test_portfolio_allocation_and_cap_warnings(eng, monkeypatch):
         assert "over cap" in html and "above your 20% cap" in html
 
 
+def test_cancel_queued_trade_is_logged_and_never_executes(eng, monkeypatch):
+    engine, store, sent, fs, rating = eng
+    from fastapi.testclient import TestClient
+    from app import web, etoro
+    importlib.reload(web)
+    monkeypatch.setattr(web.sched, "start", lambda: None)
+    ec = etoro.EtoroClient("k", "u", env="real", base="https://x", session=fs)
+    real_find = ec.find_instrument
+    closed = {"v": True}
+    monkeypatch.setattr(ec, "find_instrument", lambda s: {**real_find(s), "tradable": not closed["v"]})
+    monkeypatch.setattr(engine, "client", lambda: ec)
+    pid = engine.analyse(policy.WatchItem("META", "META"))["pending"]
+    assert engine.decide(pid, approve=True)["queued"]
+    assert store.get_proposal(pid)["error"] == "waiting for market"
+    assert engine.cancel(98765)["error"]                       # unknown id
+    with TestClient(web.app) as c:
+        html = c.get("/").text
+        assert "waiting for market to open" in html and f"/cancel/{pid}" in html
+        assert c.post(f"/cancel/{pid}", follow_redirects=False).status_code == 303
+        p = store.get_proposal(pid)
+        assert p["status"] == "cancelled" and "while waiting for market" in p["error"]
+        assert f"/cancel/{pid}" not in c.get("/").text
+        assert engine.cancel(pid)["error"]                     # can't cancel twice
+        line = [e["msg"] for e in store.events(20, level="audit") if "cancelled" in e["msg"]]
+        assert len(line) == 1 and f"proposal #{pid} cancelled" in line[0] and "by dashboard" in line[0]
+        assert "cancelled" in c.get("/audit").text
+    closed["v"] = False                                        # market opens: cancelled trade must stay cancelled
+    engine.process_queue()
+    assert store.get_proposal(pid)["status"] == "cancelled" and not orders(fs)
+
+
 def test_settings_sections_and_inline_validation(eng, monkeypatch):
     engine, store, sent, fs, rating = eng
     from fastapi.testclient import TestClient

@@ -146,7 +146,7 @@ def status_strip(s: dict) -> tuple[str, str]:
 
 
 STATUS_CLS = {"pending": "warn", "approved": "demo", "executed": "okp", "failed": "on", "blocked": "on",
-              "expired": "", "rejected": "", "signal": "demo"}
+              "expired": "", "rejected": "", "cancelled": "warn", "signal": "demo"}
 
 
 def status_pill(status: str) -> str:
@@ -179,7 +179,9 @@ def queue_row(p: dict, s: dict) -> str:
                 f"<a href='{B}/p/{p['id']}/{tok}'>Details</a></div>")
     else:
         waiting = "waiting for market to open" if p.get("error") == "waiting for market" else "approved, queued"
-        acts = f"<span class=muted>{waiting}</span>"
+        acts = (f"<div class=row><span class=muted>{waiting}</span>"
+                f"<form method=post action='{B}/cancel/{p['id']}' onsubmit=\"return confirm('Cancel this queued trade?')\">"
+                f"<button class=sec>Cancel</button></form></div>")
     return (f"<tr><td>#{p['id']}</td><td><b>{esc(engine._describe(p))}</b><br>"
             f"<span class=muted>{esc(p['rating'] or '')}{' · ' + why if why else ''}</span></td>"
             f"<td>{status_pill(p['status'])}<br><span class=muted>{time_left(p, s)}</span></td><td>{acts}</td></tr>")
@@ -505,6 +507,14 @@ async def save_settings(request: Request):
     if config.SCHEDULER_ENABLED:
         schedule_jobs()
     return back("/settings")
+
+
+@app.post("/cancel/{pid}")
+def cancel_queued(pid: int):
+    r = engine.cancel(pid, "dashboard")
+    if r.get("error"):
+        store.log("warn", f"cancel of proposal #{pid} ignored: {r['error']} (status {r.get('status')})")
+    return back()
 
 
 @app.post("/run")

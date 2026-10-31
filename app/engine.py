@@ -197,6 +197,19 @@ def decide(pid: int, approve: bool, actor: str = "") -> dict:
     return execute(pid)
 
 
+def cancel(pid: int, actor: str = "") -> dict:
+    """Cancel an approved trade that is still queued (e.g. waiting for the market to open)."""
+    with _exec_lock:   # same lock as execute(), so a trade can't be placed and cancelled at once
+        p = store.get_proposal(pid)
+        if not p or p["status"] != "approved":
+            return {"error": "not queued", "status": p and p["status"]}
+        waited = p.get("error") == "waiting for market"
+        store.update_proposal(pid, status="cancelled", decided=_utc_now().isoformat(timespec="seconds"),
+                              error="cancelled by user" + (" while waiting for market" if waited else ""))
+        audit(pid, "cancelled", f"by {actor or 'user'}" + (" while waiting for market to open" if waited else " before placement"))
+        return {"status": "cancelled"}
+
+
 def execute(pid: int) -> dict:
     """Place an approved proposal if limits still pass and the market is open; else leave queued."""
     with _exec_lock:
