@@ -85,9 +85,15 @@ def log(level: str, msg: str) -> None:
         c.execute("INSERT INTO events(ts, level, msg) VALUES (?, ?, ?)", (_now(), level, msg[:2000]))
 
 
-def events(limit: int = 50) -> list:
+def events(limit: int = 50, level: str | None = None) -> list:
+    q, args = "SELECT * FROM events", []
+    if level:
+        q += " WHERE level=?"
+        args.append(level)
+    q += " ORDER BY id DESC LIMIT ?"
+    args.append(limit)
     with _lock, connect() as c:
-        return [dict(r) for r in c.execute("SELECT * FROM events ORDER BY id DESC LIMIT ?", (limit,))]
+        return [dict(r) for r in c.execute(q, args)]
 
 
 def start_run(ticker: str) -> int:

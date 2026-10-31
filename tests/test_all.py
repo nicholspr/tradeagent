@@ -289,3 +289,21 @@ def test_create_test_trade_only_in_dry_run(eng, monkeypatch):
     store.set_setting("cooldown_days", "0")
     out = engine.create_test("META", "sell")
     assert "pending" in out                                       # auto mode: sells still need approval
+
+
+def test_audit_trail(eng, monkeypatch):
+    engine, store, sent, fs, rating = eng
+    from fastapi.testclient import TestClient
+    from app import web
+    importlib.reload(web)
+    monkeypatch.setattr(web.sched, "start", lambda: None)
+    pid = engine.analyse(policy.WatchItem("META", "META"))["pending"]
+    p = store.get_proposal(pid)
+    with TestClient(web.app) as c:
+        c.post(f"/p/{pid}/{engine.token_for(pid, p['created'])}/reject", headers={"x-forwarded-for": "81.2.3.4"})
+        lines = [e["msg"] for e in store.events(20, level="audit")]
+        assert any(f"proposal #{pid} created, awaiting approval" in l and "BUY META $25.00" in l for l in lines)
+        assert any(f"proposal #{pid} rejected" in l and "81.2.3.4" in l for l in lines)
+        assert "81.2.3.4" in c.get("/audit").text
+        csv_text = c.get("/audit.csv").text
+        assert csv_text.startswith("timestamp_utc,event") and f"proposal #{pid}" in csv_text

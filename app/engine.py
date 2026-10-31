@@ -50,6 +50,20 @@ def _describe(p: dict) -> str:
     return f"SELL HALF {p['ticker']} (~${p['amount_usd']:.2f})"
 
 
+def audit(pid: int, event: str, extra: str = "") -> None:
+    """One audit line per proposal event: id, what, rating, mode, status and why."""
+    p = store.get_proposal(pid)
+    if not p:
+        return
+    what = _describe(p) if p["action"] != "none" else f"{p['ticker']} no trade"
+    line = (f"proposal #{pid} {event}: {what} | rating {p['rating']} | mode {p['mode']} | "
+            f"status {p['status']}")
+    why = extra or p.get("error") or p.get("reason")
+    if why:
+        line += f" | {why}"
+    store.log("audit", line)
+
+
 def _first_lines(text: str, n: int = 600) -> str:
     t = " ".join((text or "").split())
     return t[:n] + ("…" if len(t) > n else "")
@@ -106,6 +120,7 @@ def _act(symbol, inst, book, s, rating, decision, run_id, prop, manual=False) ->
     sized, blocks = _limits(prop, inst, book, s, tradable=True)
     if sized is None:
         pid = store.add_proposal({**base, "status": "blocked", "reason": "; ".join(blocks)})
+        audit(pid, "created and blocked by limits")
         msg = f"{symbol}: agent says {rating}, blocked by limits: {'; '.join(blocks)}"
         store.log("info", msg)
         notify.email(f"{symbol}: {rating} (blocked)", f"{msg}\n\n{decision}")
@@ -114,6 +129,7 @@ def _act(symbol, inst, book, s, rating, decision, run_id, prop, manual=False) ->
     base.update(amount_usd=sized.amount_usd, units=sized.units, position_ids=sized.position_ids)
     if s["mode"] == "signals":
         pid = store.add_proposal({**base, "status": "signal", "reason": sized.reason})
+        audit(pid, "created as signal (signals mode, no trade)")
         p = store.get_proposal(pid)
         notify.both(f"Signal: {_describe(p)}",
                     f"TradeAgent signal: {_describe(p)} (rating {rating}). Signals mode: place it yourself if you agree.",
@@ -122,6 +138,7 @@ def _act(symbol, inst, book, s, rating, decision, run_id, prop, manual=False) ->
 
     if policy.needs_approval(sized, s):
         pid = store.add_proposal({**base, "status": "pending", "reason": sized.reason})
+        audit(pid, f"created, awaiting approval (expires in {s['approval_ttl_hours']}h)")
         p = store.get_proposal(pid)
         url = link_for(p)
         notify.sms(f"TradeAgent: {_describe(p)} (rating {rating}). Review & approve within "
@@ -131,6 +148,7 @@ def _act(symbol, inst, book, s, rating, decision, run_id, prop, manual=False) ->
 
     pid = store.add_proposal({**base, "status": "approved", "reason": sized.reason})
     store.update_proposal(pid, decided=_utc_now().isoformat(timespec="seconds"))
+    audit(pid, "created and auto-approved (automatic mode)")
     result = execute(pid)
     return {"rating": rating, "auto": pid, "result": result}
 
@@ -165,17 +183,17 @@ def create_test(symbol: str, action: str) -> dict:
 
 
 # ---------------------------------------------------------------- execution
-def decide(pid: int, approve: bool) -> dict:
+def decide(pid: int, approve: bool, actor: str = "") -> dict:
     p = store.get_proposal(pid)
     if not p or p["status"] != "pending":
         return {"error": "not pending", "status": p and p["status"]}
     now = _utc_now().isoformat(timespec="seconds")
     if not approve:
         store.update_proposal(pid, status="rejected", decided=now)
-        store.log("info", f"proposal {pid} rejected")
+        audit(pid, "rejected", f"by {actor or 'user'}")
         return {"status": "rejected"}
     store.update_proposal(pid, status="approved", decided=now)
-    store.log("info", f"proposal {pid} approved")
+    audit(pid, "approved", f"by {actor or 'user'}")
     return execute(pid)
 
 
@@ -195,7 +213,9 @@ def execute(pid: int) -> dict:
             store.log("error", f"proposal {pid}: eToro unavailable: {e}")
             return {"queued": True, "error": str(e)}
         if not inst["tradable"]:
-            store.log("info", f"proposal {pid} approved; waiting for {p['ticker']} market to open")
+            if not p.get("error") == "waiting for market":
+                store.update_proposal(pid, error="waiting for market")
+                audit(pid, "queued", f"waiting for {p['ticker']} market to open")
             return {"queued": True, "reason": "market closed"}
 
         h = book.holdings.get(inst["instrumentId"])
@@ -208,6 +228,7 @@ def execute(pid: int) -> dict:
         sized, blocks = _limits(prop, inst, book, s, tradable=True)
         if sized is None:
             store.update_proposal(pid, status="blocked", error="; ".join(blocks))
+            audit(pid, "blocked at execution")
             notify.both("Trade blocked", f"TradeAgent: {_describe(p)} blocked at execution: {'; '.join(blocks)}",
                         f"{_describe(p)} blocked at execution:\n" + "\n".join(blocks))
             return {"blocked": blocks}
@@ -232,6 +253,7 @@ def execute(pid: int) -> dict:
         now = _utc_now().isoformat(timespec="seconds")
         store.update_proposal(pid, status="executed", executed=now, amount_usd=sized.amount_usd,
                               order_ref=",".join(refs), error=None)
+        audit(pid, "executed" + (" (TEST, nothing sent)" if config.DRY_RUN else ""), f"orders {','.join(refs)}")
         desc = _describe({**p, "amount_usd": sized.amount_usd})
         env = "DEMO" if ec.demo else "REAL"
         if config.DRY_RUN:
@@ -249,7 +271,7 @@ def execute(pid: int) -> dict:
 
 def _fail(pid: int, err: str) -> dict:
     store.update_proposal(pid, status="failed", error=err[:500])
-    store.log("error", f"proposal {pid} failed: {err}")
+    audit(pid, "failed", err[:300])
     notify.both("Trade failed", f"TradeAgent: order failed: {err[:200]}", f"Proposal {pid} failed:\n{err}")
     return {"failed": err}
 
@@ -274,10 +296,11 @@ def process_queue() -> None:
     for p in store.proposals("pending", 100):
         if now - datetime.fromisoformat(p["created"]) > ttl:
             store.update_proposal(p["id"], status="expired", decided=now.isoformat(timespec="seconds"))
-            store.log("info", f"proposal {p['id']} expired")
+            audit(p["id"], "expired", f"not approved within {s['approval_ttl_hours']}h")
     for p in store.proposals("approved", 100):
         if now - datetime.fromisoformat(p["decided"] or p["created"]) > timedelta(hours=24):
             store.update_proposal(p["id"], status="expired")
+            audit(p["id"], "expired", "approved but market did not open within 24h")
             continue
         execute(p["id"])
 

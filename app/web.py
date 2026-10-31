@@ -6,7 +6,7 @@ from contextlib import asynccontextmanager
 
 from apscheduler.schedulers.background import BackgroundScheduler
 from apscheduler.triggers.cron import CronTrigger
-from fastapi import FastAPI, Form, HTTPException
+from fastapi import FastAPI, Form, HTTPException, Request
 from fastapi.responses import HTMLResponse, RedirectResponse
 
 from . import config, engine, policy, store
@@ -110,8 +110,8 @@ def dashboard():
     runs = "".join(
         f"<tr><td><a href='{B}/run/{r['id']}'>#{r['id']}</a></td><td>{r['started'][:16]}</td><td>{esc(r['ticker'])}</td>"
         f"<td>{esc(r['rating'] or ('error' if r['error'] else 'running…'))}</td></tr>" for r in store.runs(15))
-    evs = "".join(f"<tr><td class=muted>{e['ts'][5:16]}</td><td>{e['level']}</td><td>{esc(e['msg'][:200])}</td></tr>"
-                  for e in store.events(25))
+    evs = "".join(f"<tr><td class=muted>{e['ts'][5:16]}</td><td>{e['level']}</td><td>{esc(e['msg'][:400])}</td></tr>"
+                  for e in store.events(40))
 
     def opt(v, label):
         return f"<option value={v} {'selected' if s['mode'] == v else ''}>{label}</option>"
@@ -162,7 +162,7 @@ def dashboard():
 <p><button>Save settings</button></p></form></div>
 <h2>Recent calls</h2><div class=card><table>{hist}</table></div>
 <h2>Agent runs</h2><div class=card><table>{runs}</table></div>
-<h2>Log</h2><div class=card><table>{evs}</table></div>
+<h2>Log <a class=muted href='{B}/audit'>full audit trail / CSV</a></h2><div class=card><table>{evs}</table></div>
 <p class=muted>Research tool output is not financial advice. Limits are enforced by code, not by the AI.</p>"""
     return page("TradeAgent", body, refresh=30 if running else 0)
 
@@ -250,6 +250,28 @@ def test_trade(symbol: str = Form(...), action: str = Form("buy")):
     return back()
 
 
+@app.get("/audit", response_class=HTMLResponse)
+def audit_page():
+    rows = "".join(f"<tr><td class=muted>{e['ts'][:19].replace('T', ' ')}</td><td>{esc(e['msg'])}</td></tr>"
+                   for e in store.events(1000, level="audit"))
+    return page("Audit trail", f"<p><a href='{B}/'>← Dashboard</a> · <a href='{B}/audit.csv'>Download CSV</a></p>"
+                f"<h1>Audit trail</h1><p class=muted>Every proposal event, newest first (times UTC).</p>"
+                f"<div class=card><table>{rows or '<tr><td>None yet</td></tr>'}</table></div>")
+
+
+@app.get("/audit.csv")
+def audit_csv():
+    import csv, io
+    from fastapi.responses import Response
+    buf = io.StringIO()
+    w = csv.writer(buf)
+    w.writerow(["timestamp_utc", "event"])
+    for e in reversed(store.events(100000, level="audit")):
+        w.writerow([e["ts"], e["msg"]])
+    return Response(buf.getvalue(), media_type="text/csv",
+                    headers={"Content-Disposition": "attachment; filename=tradeagent-audit.csv"})
+
+
 @app.get("/run/{run_id}", response_class=HTMLResponse)
 def show_run(run_id: int):
     r = store.get_run(run_id)
@@ -286,11 +308,13 @@ def review(pid: int, token: str):
 
 
 @app.post("/p/{pid}/{token}/{action}", response_class=HTMLResponse)
-def act(pid: int, token: str, action: str):
+def act(pid: int, token: str, action: str, request: Request):
     _check(pid, token)
     if action not in ("approve", "reject"):
         raise HTTPException(400)
-    res = engine.decide(pid, approve=(action == "approve"))
+    ip = (request.headers.get("x-forwarded-for") or (request.client.host if request.client else "")).split(",")[0].strip()
+    via = "dashboard" if "/trader/" in (request.headers.get("referer") or "") and "/p/" not in (request.headers.get("referer") or "") else "approval link"
+    res = engine.decide(pid, approve=(action == "approve"), actor=f"{via} from {ip or 'unknown IP'}")
     p = store.get_proposal(pid)
     msg = {"executed": "Order placed.", "queued": "Approved — will be placed when the market opens.",
            "rejected": "Rejected.", "status": "Rejected."}
