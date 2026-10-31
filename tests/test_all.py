@@ -886,8 +886,7 @@ def test_portfolio_refresh_follows_market_state(eng, monkeypatch):
     with TestClient(web.app) as c:
         page = c.get("/").text
         assert "http-equiv=refresh content=60" in page
-        assert "<th>Last refreshed</th>" in page and "every 60 seconds while a market you hold is open" in page
-        assert datetime.fromtimestamp(sat, web.config_tz()).strftime("%H:%M:%S") in page
+        assert "Last refreshed" not in page and "every 60 seconds while a market you hold is open" in page
         n = calls["book"]
         c.get("/")
         assert calls["book"] == n                                   # second load inside the minute uses the snapshot
@@ -943,7 +942,7 @@ def test_portfolio_hourly_sparkline(eng, monkeypatch):
         for i, n in ((1, "UP"), (2, "DOWN"), (3, "NONE"))})
     info = {"UP": {"open": True}, "DOWN": {"open": False}, "NONE": {"open": True}}
     html = web.portfolio_card(book, web.store.get_settings(), {}, info, None, got)
-    assert "<th>Price as of</th>" in html and html.index("<th>Price as of</th>") < html.index("<th>Last refreshed</th>")
+    assert "<th>Price as of</th>" in html and "Last refreshed" not in html
     t = datetime.fromtimestamp(last_trade_end, web.config_tz())
     assert f"Price as of {t.strftime('%Y-%m-%d %H:%M:%S %Z')}" in html
     assert "market closed, so the price is the last trade" in html                   # DOWN is closed
