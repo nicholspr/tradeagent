@@ -490,6 +490,50 @@ def test_failed_scan_is_recorded_and_not_blocking(eng, monkeypatch):
     assert op.stale({"started": "2020-01-01T00:00:00+00:00"})
 
 
+def test_watchlist_market_rows_and_card(eng, monkeypatch):
+    engine, store, sent, fs, rating = eng
+    from fastapi.testclient import TestClient
+    from app import web, markets
+    importlib.reload(markets)
+    importlib.reload(web)
+    monkeypatch.setattr(web.sched, "start", lambda: None)
+    candles = [{"date": f"2026-10-{d:02d}", "open": 1, "high": 243.31 if d == 5 else 210, "low": 162.95 if d == 6 else 200,
+                "close": 213.67 if d == 29 else 204.68} for d in range(1, 31)]
+    item = {"internalInstrumentId": 1137, "internalInstrumentDisplayName": "NVIDIA Corporation", "dailyPriceChange": -4.22,
+            "buyHoldingPct": 100, "sellHoldingPct": 0, "isCurrentlyTradable": False, "logo50x50": "https://cdn.example/nvda.png"}
+    row = markets.build_row("NVDA", item, candles, {"bid": 204.68, "ask": 204.69})
+    assert row["bid"] == 204.68 and row["ask"] == 204.69
+    assert row["low52"] == 162.95 and row["high52"] == 243.31
+    assert 0 < row["range_pos"] < 100 and row["sentiment"] == ("Buying", 100.0)
+    assert row["change_abs"] == pytest.approx(204.68 - 204.68 / 0.9578, abs=0.01)     # about -9.02
+    assert markets.sentiment({"buyHoldingPct": 30, "sellHoldingPct": 70}) == ("Selling", 70.0)
+    assert markets.sentiment({}) is None
+    fallback = markets.build_row("X", {}, candles[-2:], None)                       # no search data: change from candles
+    assert fallback["change_pct"] == pytest.approx((204.68 / 213.67 - 1) * 100)
+    assert markets.range_position(5, 5, 5) == 50.0
+
+    class EC:
+        def search_item(self, sym):
+            if sym == "BAD":
+                raise RuntimeError("boom <script>")
+            return {**item, "internalInstrumentId": {"META": 1, "GOOG": 2}.get(sym, 3), "internalInstrumentDisplayName": sym}
+        def daily_candles(self, iid, count=365):
+            return candles
+        def rates(self, ids):
+            return {i: {"bid": 10.0, "ask": 10.5} for i in ids}
+    rows = markets.watchlist_rows(EC(), ["META", "BAD", "GOOG"])
+    assert [r["symbol"] for r in rows] == ["META", "BAD", "GOOG"] and "error" in rows[1] and "error" not in rows[0]
+    html = web.market_row(rows[0])
+    assert "chg down" in html and "-4.22%" in html and "100% Buying" in html and "closed" in html and "<polyline" in html
+    assert "<script>" not in web.market_row(rows[1]) and "Market data unavailable" in web.market_row(rows[1])
+    monkeypatch.setattr(web.engine, "client", lambda: EC())
+    monkeypatch.setattr(markets, "_cache", {})
+    with TestClient(web.app) as c:
+        page = c.get("/").text
+        assert "Change 1D" in page and "52W range" in page and "Sentiment" in page and "Short" in page
+        assert not orders(fs)
+
+
 def test_settings_sections_and_inline_validation(eng, monkeypatch):
     engine, store, sent, fs, rating = eng
     from fastapi.testclient import TestClient

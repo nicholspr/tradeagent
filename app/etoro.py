@@ -114,6 +114,27 @@ class EtoroClient:
                     "rate": r.get("ask") or r.get("lastExecution"), "assetClass": it.get("type")}
         raise EtoroError(f"instrument {symbol!r} not found on eToro")
 
+    def search_item(self, symbol: str) -> dict | None:
+        """Raw v1 search record (daily change, logo, buy/sell sentiment...) for an exact symbol, else None."""
+        data = self._req("GET", "/api/v1/market-data/search", params={"internalSymbolFull": symbol})
+        for it in data.get("items", []):
+            if str(it.get("internalSymbolFull", "")).upper() == symbol.upper():
+                return it
+        return None
+
+    def daily_candles(self, instrument_id: int, count: int = 365) -> list[dict]:
+        """Daily candles, oldest first: [{date, open, high, low, close}]."""
+        data = self._req("GET", f"/api/v1/market-data/instruments/{int(instrument_id)}/history/candles/desc/OneDay/{int(count)}")
+        out = []
+        for block in data.get("candles", []):
+            for c in block.get("candles", []):
+                try:
+                    out.append({"date": c["fromDate"], "open": float(c["open"]), "high": float(c["high"]),
+                                "low": float(c["low"]), "close": float(c["close"])})
+                except (KeyError, TypeError, ValueError):
+                    continue
+        return sorted(out, key=lambda c: c["date"])
+
     def rates(self, instrument_ids: list[int]) -> dict[int, dict]:
         if not instrument_ids:
             return {}

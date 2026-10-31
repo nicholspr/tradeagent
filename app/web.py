@@ -11,7 +11,7 @@ from apscheduler.triggers.cron import CronTrigger
 from fastapi import FastAPI, Form, HTTPException, Request
 from fastapi.responses import HTMLResponse, RedirectResponse
 
-from . import config, engine, opportunities, policy, store
+from . import config, engine, markets, opportunities, policy, store
 
 sched = BackgroundScheduler(timezone=config.TZ)
 
@@ -108,6 +108,15 @@ input.invalid,textarea.invalid{border-color:#dc2626;box-shadow:0 0 0 2px #dc2626
 .bar .fill{position:absolute;left:0;top:0;bottom:0;border-radius:4px;background:var(--accent)}
 .bar .fill.near{background:#d4a72c}.bar .fill.over{background:#dc2626}
 .bar .cap{position:absolute;top:-3px;bottom:-3px;width:2px;background:var(--text);opacity:.7}
+.mk{display:flex;align-items:center;gap:10px;min-width:170px}.logo{width:34px;height:34px;border-radius:8px;flex:none;background:var(--chip)}
+.chg{font-weight:700;font-size:16px;white-space:nowrap}.chg small{display:block;font-size:11px;font-weight:600}
+.chg.up{color:#4ade80}.chg.down{color:#f87171}.spark{width:120px;height:34px;display:block}
+.px{display:inline-block;min-width:88px;text-align:right;background:var(--chip);border-radius:999px;padding:7px 14px;font-weight:700}
+.px.buy{background:#2a3142}.rcell{min-width:150px}.rng{display:flex;justify-content:space-between;font-weight:600;font-size:13px}
+.rbar{position:relative;height:5px;background:#3a4152;border-radius:3px;margin-top:6px}
+.rbar i{position:absolute;top:-3px;width:0;height:0;margin-left:-5px;border-left:5px solid transparent;border-right:5px solid transparent;border-top:7px solid #cbd5e1}
+.scell{min-width:130px}.sent span{font-size:13px}.sbar{height:6px;background:#3a4152;border-radius:3px;margin-top:6px;overflow:hidden}
+.sbar b{display:block;height:100%;background:#22c55e}.sbar b.sell{background:#ef4444}
 @media (max-width:1280px){.c3,.c4{grid-column:span 6}.c8,.c9{grid-column:span 12}}
 @media (max-width:760px){
  header{padding:10px 12px 0;gap:8px}nav{margin-left:0;width:100%;overflow-x:auto}nav a{padding:10px 12px;flex:1;text-align:center}
@@ -252,6 +261,69 @@ def alloc_bar(share_pct: float, cap_pct: float) -> str:
     return (f"<div class=bar><b class='fill {state}' style='width:{min(max(share_pct, 0), 100):.1f}%'></b>{mark}</div>")
 
 
+def fmt_price(v) -> str:
+    v = float(v)
+    return f"{v:,.2f}" if abs(v) >= 1 else f"{v:.4f}"
+
+
+def sparkline(points: list[float], up: bool) -> str:
+    if len(points) < 2:
+        return ""
+    lo, hi = min(points), max(points)
+    span = (hi - lo) or 1
+    w, h = 120, 34
+    pts = " ".join(f"{i * w / (len(points) - 1):.1f},{h - 2 - (p - lo) / span * (h - 4):.1f}" for i, p in enumerate(points))
+    col = "#22c55e" if up else "#ef4444"
+    return (f"<svg class=spark viewBox='0 0 {w} {h}' preserveAspectRatio=none aria-hidden=true>"
+            f"<polyline points='{pts}' fill=none stroke='{col}' stroke-width=1.6 stroke-linejoin=round /></svg>")
+
+
+def market_row(r: dict) -> str:
+    if r.get("error"):
+        return (f"<tr><td><b>{esc(r['symbol'])}</b></td><td colspan=6 class=muted>"
+                f"Market data unavailable: {esc(r['error'])}</td></tr>")
+    logo = (f"<img class=logo src='{esc(r['logo'])}' alt='' loading=lazy referrerpolicy=no-referrer "
+            f"onerror=\"this.style.visibility='hidden'\">" if r.get("logo") else "<span class=logo></span>")
+    closed = " <span class=pill title='Market is closed; prices are the last close'>closed</span>" if r.get("tradable") is False else ""
+    pct, ab = r.get("change_pct"), r.get("change_abs")
+    if pct is None:
+        chg = "<span class=muted>n/a</span>"
+    else:
+        cls = "up" if pct >= 0 else "down"
+        arrow = "▲" if pct >= 0 else "▼"
+        chg = (f"<div class='chg {cls}'>{'+' if ab is not None and ab > 0 else ''}{fmt_price(ab) if ab is not None else ''}"
+               f"<small>{arrow} ({pct:+.2f}%)</small></div>")
+    if r.get("range_pos") is None:
+        rng = "<span class=muted>n/a</span>"
+    else:
+        rng = (f"<div class=rng><span>{fmt_price(r['low52'])}</span><span>{fmt_price(r['high52'])}</span></div>"
+               f"<div class=rbar><i style='left:{r['range_pos']:.1f}%'></i></div>")
+    sent = r.get("sentiment")
+    sent_cell = (f"<div class=sent><span>{sent[1]:.0f}% {sent[0]}</span><div class=sbar>"
+                 f"<b class='{'sell' if sent[0] == 'Selling' else ''}' style='width:{min(sent[1], 100):.0f}%'></b></div></div>"
+                 if sent else "<span class=muted>n/a</span>")
+    return (f"<tr><td><div class=mk>{logo}<div><b>{esc(r['symbol'])}</b>{closed}<br>"
+            f"<span class=muted>{esc(r['name'])}</span></div></div></td><td>{chg}</td>"
+            f"<td>{sparkline(r.get('spark') or [], (pct or 0) >= 0)}</td>"
+            f"<td><span class=px>{fmt_price(r['bid']) if r.get('bid') else 'n/a'}</span></td>"
+            f"<td><span class='px buy'>{fmt_price(r['ask']) if r.get('ask') else 'n/a'}</span></td>"
+            f"<td class=rcell>{rng}</td><td class=scell>{sent_cell}</td></tr>")
+
+
+def markets_card(s: dict) -> str:
+    symbols = [i.symbol for i in policy.parse_watchlist(s["watchlist"]) if i.symbol]
+    if not symbols:
+        return "<p class=muted>Your watchlist is empty. Add symbols in Settings.</p>"
+    try:
+        rows = markets.watchlist_rows(engine.client(), symbols)
+    except Exception as e:  # noqa: BLE001
+        return f"<p class=muted>Market data unavailable: {esc(str(e))}</p>"
+    head = ("<tr><th>Markets</th><th>Change 1D</th><th></th><th>Short</th><th>Buy</th><th>52W range</th><th>Sentiment</th></tr>")
+    return (table("".join(market_row(r) for r in rows), head)
+            + "<p class=muted>Live data from eToro, cached for a minute. Short and Buy are the bid and ask. "
+              "Sentiment is the share of eToro investors holding long or short. Display only.</p>")
+
+
 def portfolio_card(book, s: dict) -> str:
     cap = float(s.get("max_position_pct") or 0)
     total = book.total_usd or 0
@@ -340,6 +412,7 @@ def dashboard():
     body = ("<div class=layout>"
             + card("Control", control, "c4")
             + card("Portfolio", port, "c8")
+            + card("Watchlist", markets_card(s), "c12", f"<span class=muted>{len(policy.parse_watchlist(s['watchlist']))} markets</span>")
             + card("Waiting for you", table(prow), "c6",
                    f"<span class='pill {'warn' if pend else ''}'>{len(pend)}</span>")
             + card("Run an analysis now", run_card, "c3" if config.DRY_RUN else "c6")
