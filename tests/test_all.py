@@ -258,3 +258,17 @@ def test_split_env_user_key(monkeypatch):
     from app import config
     importlib.reload(config)
     assert config.ETORO_USER_KEY == "abcdef"
+
+
+def test_dashboard_autorefresh_while_running(eng, monkeypatch):
+    engine, store, sent, fs, rating = eng
+    from fastapi.testclient import TestClient
+    from app import web
+    importlib.reload(web)
+    monkeypatch.setattr(web.sched, "start", lambda: None)
+    with TestClient(web.app) as c:
+        assert "http-equiv=refresh" not in c.get("/").text
+        rid = store.start_run("BTC")
+        assert "http-equiv=refresh content=30" in c.get("/").text
+        store.finish_run(rid, "Hold", "x")
+        assert "http-equiv=refresh" not in c.get("/").text

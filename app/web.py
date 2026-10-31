@@ -67,8 +67,9 @@ label{font-size:12px;color:#555}.muted{color:#666;font-size:12px}pre{white-space
 """
 
 
-def page(title: str, body: str) -> HTMLResponse:
-    return HTMLResponse(f"<!doctype html><html><head><meta charset=utf-8><meta name=viewport "
+def page(title: str, body: str, refresh: int = 0) -> HTMLResponse:
+    meta = f"<meta http-equiv=refresh content={refresh}>" if refresh else ""
+    return HTMLResponse(f"<!doctype html><html><head><meta charset=utf-8>{meta}<meta name=viewport "
                         f"content='width=device-width,initial-scale=1'><title>{esc(title)}</title>"
                         f"<style>{CSS}</style></head><body><main>{body}</main></body></html>")
 
@@ -127,10 +128,12 @@ def dashboard():
                  f"<option {'selected' if s[k]!='on' else ''}>off</option></select></div>")
     items = "".join(f"<option>{esc(i.symbol)}</option>" for i in policy.parse_watchlist(s["watchlist"]))
 
+    running = any(not r["finished"] for r in store.runs(5))
     body = f"""
 <h1>TradeAgent <span class='pill {env_cls}'>{config.ETORO_ENV.upper()} account</span>
 {' <span class=pill>DRY RUN</span>' if config.DRY_RUN else ''}
 {' <span class="pill on">KILL SWITCH ON</span>' if s['kill_switch']=='on' else ''}</h1>
+{'<p class=muted>Analysis running: this page refreshes every 30 seconds.</p>' if running else ''}
 <div class=card><form method=post action='{B}/mode' style='display:flex;gap:8px;align-items:end;flex-wrap:wrap'>
 <div style='flex:1;min-width:220px'><label>Mode</label><select name=mode>
 {opt('signals','Signals only — never trades')}{opt('approval','Approval — I approve each trade')}{opt('auto','Fully automatic — within limits')}
@@ -153,7 +156,7 @@ def dashboard():
 <h2>Agent runs</h2><div class=card><table>{runs}</table></div>
 <h2>Log</h2><div class=card><table>{evs}</table></div>
 <p class=muted>Research tool output is not financial advice. Limits are enforced by code, not by the AI.</p>"""
-    return page("TradeAgent", body)
+    return page("TradeAgent", body, refresh=30 if running else 0)
 
 
 def keystate(name: str, env_value: str) -> str:

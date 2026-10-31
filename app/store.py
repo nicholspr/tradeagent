@@ -80,6 +80,7 @@ def set_setting(key: str, value: str) -> None:
 
 
 def log(level: str, msg: str) -> None:
+    print(f"[tradeagent] {level.upper()} {msg[:500]}", flush=True)   # visible in docker logs
     with _lock, connect() as c:
         c.execute("INSERT INTO events(ts, level, msg) VALUES (?, ?, ?)", (_now(), level, msg[:2000]))
 
