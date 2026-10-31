@@ -280,11 +280,20 @@ def _fail(pid: int, err: str) -> dict:
 def scheduled_analysis(asset: str = "stock") -> None:
     s = store.get_settings()
     items = [i for i in policy.parse_watchlist(s["watchlist"]) if (i.asset_type == "crypto") == (asset == "crypto")]
-    budget = int(float(s["analyses_per_day"] or 0)) - store.runs_since(_day_start_iso())
-    if budget <= 0 or not items:
+    limit = int(float(s["analyses_per_day"] or 0))
+    done = store.runs_since(_day_start_iso())
+    if not items:
+        store.log("info", f"scheduled {asset} run: no {asset} entries in the watchlist")
+        return
+    if done >= limit:
+        store.log("warn", f"scheduled {asset} run skipped: daily analysis limit reached "
+                          f"({done} of {limit} used today, manual runs included)")
         return
     items.sort(key=lambda i: store.last_run_for(i.symbol) or "")   # least recently analysed first
-    for item in items[:budget]:
+    chosen = items[:limit - done]
+    store.log("info", f"scheduled {asset} run started: {', '.join(i.symbol for i in chosen)} "
+                      f"({done} of {limit} analyses used today)")
+    for item in chosen:
         analyse(item)
 
 

@@ -307,3 +307,13 @@ def test_audit_trail(eng, monkeypatch):
         assert "81.2.3.4" in c.get("/audit").text
         csv_text = c.get("/audit.csv").text
         assert csv_text.startswith("timestamp_utc,event") and f"proposal #{pid}" in csv_text
+
+
+def test_scheduled_run_logs_skip_and_start(eng):
+    engine, store, sent, fs, rating = eng
+    rating["v"] = "Hold"
+    store.set_setting("analyses_per_day", "1")
+    engine.scheduled_analysis("crypto")
+    assert any("scheduled crypto run started: BTC" in e["msg"] for e in store.events(10))
+    engine.scheduled_analysis("crypto")
+    assert any("skipped: daily analysis limit reached (1 of 1" in e["msg"] for e in store.events(10))
