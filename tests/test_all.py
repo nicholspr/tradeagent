@@ -550,34 +550,62 @@ def test_watchlist_market_rows_and_card(eng, monkeypatch):
         assert i == sorted(i)
 
 
-def test_watchlist_last_refreshed_per_row(eng, monkeypatch):
+def test_watchlist_hourly_sparkline_and_price_as_of(eng, monkeypatch):
     engine, store, sent, fs, rating = eng
     from app import web, markets
     importlib.reload(markets)
     importlib.reload(web)
     utc = lambda *a: datetime(*a, tzinfo=timezone.utc)
+    reads = {"AAPL": 0, "BTC": 0}
 
     class EC:
         def search_item(self, sym):
             return {"internalInstrumentId": 1 if sym == "AAPL" else 2, "internalInstrumentDisplayName": sym,
-                    "internalAssetClassName": "Stocks" if sym == "AAPL" else "Cryptocurrencies", "dailyPriceChange": 1.0}
+                    "internalAssetClassName": "Stocks" if sym == "AAPL" else "Cryptocurrencies", "dailyPriceChange": 1.0,
+                    "isCurrentlyTradable": sym != "AAPL"}
         def daily_candles(self, iid, count=365):
             return [{"date": "d", "open": 1, "high": 2, "low": 1, "close": 1.5}] * 3
+        def intraday_candles(self, iid, minutes=60):
+            reads["AAPL" if iid == 1 else "BTC"] += 1
+            if iid == 1:      # US stock: last trade minute 19:59 UTC Friday
+                return [{"date": f"2026-10-30T19:{57 + i}:00Z", "close": c} for i, c in enumerate((3, 2, 1))]
+            base = int(clock["t"] // 60) * 60
+            return [{"date": datetime.fromtimestamp(base - 120 + 60 * i, timezone.utc).strftime("%Y-%m-%dT%H:%M:00Z"), "close": c}
+                    for i, c in enumerate((1, 2, 3))]
         def rates(self, ids):
             return {i: {"bid": 1.5, "ask": 1.6} for i in ids}
 
     clock = {"t": utc(2026, 10, 30, 21, 0).timestamp()}            # Fri after the US close
     monkeypatch.setattr(markets.time, "time", lambda: clock["t"])
-    first = {r["symbol"]: r["fetched"] for r in markets.watchlist_rows(EC(), ["AAPL", "BTC"])}
-    assert first["AAPL"] == first["BTC"] == clock["t"]
+    rows = {r["symbol"]: r for r in markets.watchlist_rows(EC(), ["AAPL", "BTC"])}
+    assert rows["AAPL"]["intraday"] == {"closes": [3, 2, 1], "asof": utc(2026, 10, 30, 20, 0).timestamp()}
+    assert rows["BTC"]["intraday"]["closes"] == [1, 2, 3] and rows["BTC"]["intraday"]["asof"] == clock["t"]
     clock["t"] += 7200
     markets.invalidate(open_only=True)                             # the scheduled refresh
-    later = {r["symbol"]: r["fetched"] for r in markets.watchlist_rows(EC(), ["AAPL", "BTC"])}
-    assert later["AAPL"] == first["AAPL"]                          # US closed and already captured: left alone
-    assert later["BTC"] == clock["t"]                              # crypto re-read
-    html = web.fetched_cell(first["AAPL"], closed=True)
-    assert "last close" in html and datetime.fromtimestamp(first["AAPL"], web.config_tz()).strftime("%a %H:%M") in html
-    assert web.fetched_cell(None) == ""
+    markets.watchlist_rows(EC(), ["AAPL", "BTC"])
+    assert reads == {"AAPL": 1, "BTC": 2}                          # closed US stock not re-read; crypto is
+
+    html = web.market_row(rows["AAPL"])
+    assert html.count("<svg class=spark") == 2                     # 60-minute and 30-day lines
+    assert "Price as of 2026-10-30 20:00:00 GMT; market closed, so the price is the last trade" in html
+    assert "title='Last read" not in html
+    live = web.market_row(rows["BTC"])
+    assert "title='Last 60 minutes, one-minute prices'" in live and "market closed" not in live.split("Price as of")[1]
+    assert "<svg" not in web.market_row({**rows["BTC"], "intraday": None, "spark": []})   # missing data degrades to n/a
+
+    monkeypatch.setattr(web.engine, "client", lambda: EC())
+    base_settings = store.get_settings()
+    monkeypatch.setattr(web.store, "get_settings", lambda: {**base_settings, "watchlist": "AAPL,BTC"})
+    monkeypatch.setattr(markets, "_cache", {})
+    from fastapi.testclient import TestClient
+    monkeypatch.setattr(web.sched, "start", lambda: None)
+    with TestClient(web.app) as c:
+        page = c.get("/").text
+        head = page[page.index("<th>Markets"):page.index("</tr>", page.index("<th>Markets"))]
+        assert head.index("<th>Change 1D</th>") < head.index("<th>60 min</th>") < head.index("<th>30 days</th>")
+        assert head.endswith("<th>Price as of</th>") and "Last refreshed" not in head
+        w = page[page.index("<th>Markets"):page.index("</table>", page.index("<th>Markets"))]
+        assert {r.count("<td") for r in w.split("<tr>")[2:]} == {head.count("<th>")}   # one cell per column in every row
 
 
 def test_portfolio_has_live_clock(eng, monkeypatch):

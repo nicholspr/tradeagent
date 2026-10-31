@@ -157,6 +157,21 @@ def build_row(symbol: str, item: dict | None, candles: list[dict], rate: dict | 
     return row
 
 
+def _intraday_one(ec, iid: int, minutes: int = 60) -> dict:
+    """{closes: last `minutes` one-minute closes, asof: UTC timestamp the last candle ends}.
+    For a closed market that is its final hour of trading and the time of its last trade minute.
+    A failure just means no data."""
+    try:
+        cs = ec.intraday_candles(iid, minutes)
+        asof = None
+        if cs:
+            end = datetime.fromisoformat(str(cs[-1]["date"]).replace("Z", "+00:00")).timestamp() + 60
+            asof = min(end, time.time())        # a minute still in progress has not ended yet
+        return {"closes": [c["close"] for c in cs], "asof": asof}
+    except Exception:  # noqa: BLE001
+        return {"closes": [], "asof": None}
+
+
 def _fetch_one(ec, symbol: str):
     item = ec.search_item(symbol)
     if item:
@@ -167,7 +182,7 @@ def _fetch_one(ec, symbol: str):
         item = {"internalInstrumentDisplayName": inst.get("name"), "currentRate": inst.get("rate"),
                 "isCurrentlyTradable": inst.get("tradable"), "internalAssetClassName": inst.get("assetClass")}
     candles = _cached(("candles", iid), HISTORY_TTL, lambda: ec.daily_candles(iid, 365))
-    return iid, item, candles
+    return iid, item, candles, _intraday_one(ec, iid)
 
 
 def holding_sparks(ec, instrument_ids: list[int]) -> dict[int, list[float]]:
@@ -185,27 +200,15 @@ def holding_sparks(ec, instrument_ids: list[int]) -> dict[int, list[float]]:
 
 
 def holding_intraday(ec, instrument_ids: list[int], minutes: int = 60) -> dict[int, dict]:
-    """iid -> {closes: last `minutes` one-minute closes, asof: UTC timestamp the last candle ends}.
-    For a closed market that is its final hour of trading and the time of its last trade minute.
-    A failure just means no data for that holding."""
-    def one(iid):
-        try:
-            cs = ec.intraday_candles(iid, minutes)
-            asof = None
-            if cs:
-                end = datetime.fromisoformat(str(cs[-1]["date"]).replace("Z", "+00:00")).timestamp() + 60
-                asof = min(end, time.time())        # a minute still in progress has not ended yet
-            return iid, {"closes": [c["close"] for c in cs], "asof": asof}
-        except Exception:  # noqa: BLE001
-            return iid, {"closes": [], "asof": None}
+    """iid -> {closes, asof} for the portfolio card (see _intraday_one)."""
     if not instrument_ids:
         return {}
     with ThreadPoolExecutor(max_workers=min(6, len(instrument_ids))) as pool:
-        return dict(pool.map(one, instrument_ids))
+        return dict(pool.map(lambda i: (i, _intraday_one(ec, i, minutes)), instrument_ids))
 
 
 def _quote(ec, sym: str):
-    """Cached (instrument_id, search item, candles) for a symbol, or the Exception if it failed."""
+    """Cached (instrument_id, search item, candles, intraday) for a symbol, or the Exception if it failed."""
     def load():
         global _updated
         try:
@@ -295,10 +298,8 @@ def watchlist_rows(ec, symbols: list[str]) -> list[dict]:
         if isinstance(f, Exception):
             rows.append({"symbol": sym, "error": str(f)[:160]})
             continue
-        iid, item, candles = f
+        iid, item, candles, intraday = f
         row = build_row(sym, item, candles, rates.get(iid))
-        with _lock:
-            hit = _cache.get(("quote", sym))
-        row["fetched"] = hit[0] if hit else None       # when eToro was last read for this symbol
+        row["intraday"] = intraday
         rows.append(row)
     return rows

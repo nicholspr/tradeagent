@@ -317,7 +317,7 @@ def logo_img(url: str | None) -> str:
 
 def market_row(r: dict) -> str:
     if r.get("error"):
-        return (f"<tr><td><b>{esc(r['symbol'])}</b></td><td colspan=7 class=muted>"
+        return (f"<tr><td><b>{esc(r['symbol'])}</b></td><td colspan=8 class=muted>"
                 f"Market data unavailable: {esc(r['error'])}</td></tr>")
     logo = logo_img(r.get("logo"))
     closed = " <span class=pill title='Market is closed; prices are the last close'>closed</span>" if r.get("tradable") is False else ""
@@ -338,12 +338,24 @@ def market_row(r: dict) -> str:
     sent_cell = (f"<div class=sent><span>{sent[1]:.0f}% {sent[0]}</span><div class=sbar>"
                  f"<b class='{'sell' if sent[0] == 'Selling' else ''}' style='width:{min(sent[1], 100):.0f}%'></b></div></div>"
                  if sent else "<span class=muted>n/a</span>")
+    hour, asof = hour_cells(r.get("intraday"), r.get("tradable") is False)
     return (f"<tr><td><div class=mk>{logo}<div><b>{esc(r['symbol'])}</b>{closed}<br>"
             f"<span class=muted>{esc(r['name'])}</span></div></div></td><td>{chg}</td>"
+            f"<td class=sparkcell>{hour}</td>"
             f"<td>{sparkline(r.get('spark') or [], (pct or 0) >= 0)}</td>"
             f"<td><span class=px>{fmt_price(r['bid']) if r.get('bid') else 'n/a'}</span></td>"
             f"<td><span class='px buy'>{fmt_price(r['ask']) if r.get('ask') else 'n/a'}</span></td>"
-            f"<td class=rcell>{rng}</td><td class=scell>{sent_cell}</td><td>{fetched_cell(r.get('fetched'), r.get('tradable') is False)}</td></tr>")
+            f"<td class=rcell>{rng}</td><td class=scell>{sent_cell}</td><td>{asof}</td></tr>")
+
+
+def hour_cells(idata: dict | None, closed: bool) -> tuple[str, str]:
+    """(60-minute sparkline, 'price as of' time) from one-minute candles, shared by the portfolio and watchlist."""
+    idata = idata or {}
+    mins = idata.get("closes") or []
+    note = "Market closed: its final hour of trading" if closed else "Last 60 minutes, one-minute prices"
+    hour = (f"<span title='{note}'>{sparkline(mins, mins[-1] >= mins[0])}</span>"
+            if len(mins) >= 2 else "<span class=muted>n/a</span>")
+    return hour, fetched_cell(idata.get("asof"), closed, "Price as of", "the last trade")
 
 
 def fetched_cell(ts: float | None, closed: bool = False, what: str = "Last read from eToro",
@@ -372,7 +384,8 @@ def markets_card(s: dict) -> str:
         rows = markets.watchlist_rows(engine.client(), symbols)
     except Exception as e:  # noqa: BLE001
         return f"<p class=muted>Market data unavailable: {esc(str(e))}</p>"
-    head = ("<tr><th>Markets</th><th>Change 1D</th><th></th><th>Short</th><th>Buy</th><th>52W range</th><th>Sentiment</th><th>Last refreshed</th></tr>")
+    head = ("<tr><th>Markets</th><th>Change 1D</th><th>60 min</th><th>30 days</th><th>Short</th><th>Buy</th>"
+            "<th>52W range</th><th>Sentiment</th><th>Price as of</th></tr>")
     ts = markets.updated_at()
     stamp = (datetime.fromtimestamp(ts, config_tz()).strftime("%H:%M") if ts else "just now")
     rows = sorted(rows, key=lambda r: (r.get("change_pct") is None, -(r.get("change_pct") or 0)))   # best 1-day change first, no data last
@@ -428,14 +441,7 @@ def portfolio_card(book, s: dict, sparks: dict | None = None, info: dict | None 
         name = f"<br><span class=muted>{esc(meta['name'])}</span>" if meta.get("name") else ""
         stamp = (f"<span class=muted title='Last read from eToro {esc(when_title)}'>{when}</span>"
                  if when else "")
-        idata = intraday.get(h.instrument_id) or {}
-        mins = idata.get("closes") or []
-        asof = idata.get("asof")
-        hour_note = ("Last 60 minutes, one-minute prices" if meta.get("open") is not False
-                     else "Market closed: its final hour of trading")
-        hour = (f"<span title='{hour_note}'>{sparkline(mins, mins[-1] >= mins[0])}</span>"
-                if len(mins) >= 2 else "<span class=muted>n/a</span>")
-        asof_cell = fetched_cell(asof, meta.get("open") is False, "Price as of", "the last trade")
+        hour, asof_cell = hour_cells(intraday.get(h.instrument_id), meta.get("open") is False)
         rows += (f"<tr><td><div class=mk>{logo_img(meta.get('logo'))}<div><b>{esc(h.symbol)}</b>{mk}{flag}{name}</div></div></td>"
                  f"<td>{('$' + fmt_price(price)) if price else ''}{pnl}</td><td class=sparkcell>{hour}</td>"
                  f"<td class=sparkcell>{trend}</td>"
