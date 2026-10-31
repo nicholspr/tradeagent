@@ -550,6 +550,36 @@ def test_watchlist_market_rows_and_card(eng, monkeypatch):
         assert i == sorted(i)
 
 
+def test_watchlist_last_refreshed_per_row(eng, monkeypatch):
+    engine, store, sent, fs, rating = eng
+    from app import web, markets
+    importlib.reload(markets)
+    importlib.reload(web)
+    utc = lambda *a: datetime(*a, tzinfo=timezone.utc)
+
+    class EC:
+        def search_item(self, sym):
+            return {"internalInstrumentId": 1 if sym == "AAPL" else 2, "internalInstrumentDisplayName": sym,
+                    "internalAssetClassName": "Stocks" if sym == "AAPL" else "Cryptocurrencies", "dailyPriceChange": 1.0}
+        def daily_candles(self, iid, count=365):
+            return [{"date": "d", "open": 1, "high": 2, "low": 1, "close": 1.5}] * 3
+        def rates(self, ids):
+            return {i: {"bid": 1.5, "ask": 1.6} for i in ids}
+
+    clock = {"t": utc(2026, 10, 30, 21, 0).timestamp()}            # Fri after the US close
+    monkeypatch.setattr(markets.time, "time", lambda: clock["t"])
+    first = {r["symbol"]: r["fetched"] for r in markets.watchlist_rows(EC(), ["AAPL", "BTC"])}
+    assert first["AAPL"] == first["BTC"] == clock["t"]
+    clock["t"] += 7200
+    markets.invalidate(open_only=True)                             # the scheduled refresh
+    later = {r["symbol"]: r["fetched"] for r in markets.watchlist_rows(EC(), ["AAPL", "BTC"])}
+    assert later["AAPL"] == first["AAPL"]                          # US closed and already captured: left alone
+    assert later["BTC"] == clock["t"]                              # crypto re-read
+    html = web.fetched_cell(first["AAPL"], closed=True)
+    assert "last close" in html and datetime.fromtimestamp(first["AAPL"], web.config_tz()).strftime("%a %H:%M") in html
+    assert web.fetched_cell(None) == ""
+
+
 def test_pages_layout_logs_control_and_portfolio(eng, monkeypatch):
     engine, store, sent, fs, rating = eng
     from fastapi.testclient import TestClient

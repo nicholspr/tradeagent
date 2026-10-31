@@ -275,5 +275,9 @@ def watchlist_rows(ec, symbols: list[str]) -> list[dict]:
             rows.append({"symbol": sym, "error": str(f)[:160]})
             continue
         iid, item, candles = f
-        rows.append(build_row(sym, item, candles, rates.get(iid)))
+        row = build_row(sym, item, candles, rates.get(iid))
+        with _lock:
+            hit = _cache.get(("quote", sym))
+        row["fetched"] = hit[0] if hit else None       # when eToro was last read for this symbol
+        rows.append(row)
     return rows

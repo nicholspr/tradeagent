@@ -303,7 +303,7 @@ def logo_img(url: str | None) -> str:
 
 def market_row(r: dict) -> str:
     if r.get("error"):
-        return (f"<tr><td><b>{esc(r['symbol'])}</b></td><td colspan=6 class=muted>"
+        return (f"<tr><td><b>{esc(r['symbol'])}</b></td><td colspan=7 class=muted>"
                 f"Market data unavailable: {esc(r['error'])}</td></tr>")
     logo = logo_img(r.get("logo"))
     closed = " <span class=pill title='Market is closed; prices are the last close'>closed</span>" if r.get("tradable") is False else ""
@@ -329,7 +329,17 @@ def market_row(r: dict) -> str:
             f"<td>{sparkline(r.get('spark') or [], (pct or 0) >= 0)}</td>"
             f"<td><span class=px>{fmt_price(r['bid']) if r.get('bid') else 'n/a'}</span></td>"
             f"<td><span class='px buy'>{fmt_price(r['ask']) if r.get('ask') else 'n/a'}</span></td>"
-            f"<td class=rcell>{rng}</td><td class=scell>{sent_cell}</td></tr>")
+            f"<td class=rcell>{rng}</td><td class=scell>{sent_cell}</td><td>{fetched_cell(r.get('fetched'), r.get('tradable') is False)}</td></tr>")
+
+
+def fetched_cell(ts: float | None, closed: bool = False) -> str:
+    if not ts:
+        return ""
+    dt = datetime.fromtimestamp(ts, config_tz())
+    same_day = dt.date() == datetime.now(config_tz()).date()
+    label = dt.strftime("%H:%M:%S") if same_day else dt.strftime("%a %H:%M")
+    note = "; market closed, so the price is the last close" if closed else ""
+    return f"<span class=muted title='{esc(dt.strftime('%Y-%m-%d %H:%M:%S %Z'))}{note}'>{label}</span>"
 
 
 def config_tz():
@@ -347,7 +357,7 @@ def markets_card(s: dict) -> str:
         rows = markets.watchlist_rows(engine.client(), symbols)
     except Exception as e:  # noqa: BLE001
         return f"<p class=muted>Market data unavailable: {esc(str(e))}</p>"
-    head = ("<tr><th>Markets</th><th>Change 1D</th><th></th><th>Short</th><th>Buy</th><th>52W range</th><th>Sentiment</th></tr>")
+    head = ("<tr><th>Markets</th><th>Change 1D</th><th></th><th>Short</th><th>Buy</th><th>52W range</th><th>Sentiment</th><th>Last refreshed</th></tr>")
     ts = markets.updated_at()
     stamp = (datetime.fromtimestamp(ts, config_tz()).strftime("%H:%M") if ts else "just now")
     rows = sorted(rows, key=lambda r: (r.get("change_pct") is None, -(r.get("change_pct") or 0)))   # best 1-day change first, no data last
