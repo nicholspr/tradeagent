@@ -2,6 +2,7 @@
 import html
 import hmac
 import threading
+from urllib.parse import urlparse
 from contextlib import asynccontextmanager
 from datetime import datetime, timedelta, timezone
 
@@ -10,7 +11,7 @@ from apscheduler.triggers.cron import CronTrigger
 from fastapi import FastAPI, Form, HTTPException, Request
 from fastapi.responses import HTMLResponse, RedirectResponse
 
-from . import config, engine, policy, store
+from . import config, engine, opportunities, policy, store
 
 sched = BackgroundScheduler(timezone=config.TZ)
 
@@ -115,7 +116,7 @@ input.invalid,textarea.invalid{border-color:#dc2626;box-shadow:0 0 0 2px #dc2626
 }
 """
 
-NAV = [("Overview", "/"), ("Settings", "/settings")]
+NAV = [("Overview", "/"), ("Opportunities", "/opportunities"), ("Settings", "/settings")]
 
 
 MODE_LABELS = {"signals": "Signals only", "approval": "Approval", "auto": "Automatic"}
@@ -507,6 +508,91 @@ async def save_settings(request: Request):
     if config.SCHEDULER_ENABLED:
         schedule_jobs()
     return back("/settings")
+
+
+def etoro_pill(e: dict | None) -> str:
+    if not e:
+        return "<span class=pill title='eToro could not be checked'>eToro: unchecked</span>"
+    if not e.get("found"):
+        return "<span class='pill on'>Not found on eToro</span>"
+    rate = f" · ${float(e['rate']):,.2f}" if e.get("rate") else ""
+    return (f"<span class='pill okp'>On eToro · market open{rate}</span>" if e.get("tradable")
+            else f"<span class='pill warn'>On eToro · market closed{rate}</span>")
+
+
+def watch_entry(o: dict) -> str:
+    return f"{o['symbol']}={o['symbol']}-USD@crypto" if o.get("asset_type") == "crypto" else o["symbol"]
+
+
+def opportunity_card(o: dict, watched: set[str]) -> str:
+    srcs = "".join(f"<li><a href='{esc(x['url'])}' target=_blank rel='noopener noreferrer'>{esc(x['title'])}</a> "
+                   f"<span class=muted>{esc(urlparse(x['url']).netloc)}</span></li>" for x in o["sources"])
+    on = (o.get("etoro") or {}).get("found")
+    if o["symbol"] in watched:
+        act = "<span class=pill>On your watchlist</span>"
+    elif on:
+        act = (f"<form method=post action='{B}/opportunities/watch/{esc(o['symbol'])}'>"
+               f"<button class=sec>Add to watchlist</button></form>")
+    else:
+        act = ""
+    return (f"<section class='card c12'><h2>{esc(o['symbol'])} <span class=muted>{esc(o['name'])}</span>"
+            f"<span class=right>{etoro_pill(o.get('etoro'))}</span></h2>"
+            f"<p><span class=pill>{esc(o['asset_type'] or 'asset')}</span> "
+            f"<span class=pill>horizon: {esc(o['horizon'] or 'n/a')}</span></p>"
+            f"<p><b>Why:</b> {esc(o['thesis'])}</p><p><b>Catalyst:</b> {esc(o['catalyst'])}</p>"
+            f"<p><b>Risks:</b> {esc(o['risks'])}</p><p class=muted>Sources</p><ul>{srcs}</ul>{act}</section>")
+
+
+@app.get("/opportunities", response_class=HTMLResponse)
+def opportunities_page():
+    last, good = store.latest_scan(), store.latest_scan(ok_only=True)
+    running = bool(last and not last["finished"] and not opportunities.stale(last))
+    block = opportunities.can_scan()
+    if running:
+        ctl = "<p><span class='pill warn'>Scanning the web and eToro… usually 1–3 minutes. This page refreshes itself.</span></p>"
+    else:
+        dis = " disabled" if block else ""
+        ctl = (f"<form method=post action='{B}/opportunities/scan' "
+               f"onsubmit=\"return confirm('Run a new scan? It uses Claude with web search (roughly $0.20-$1).')\">"
+               f"<button{dis}>Find new opportunities</button></form>"
+               + (f"<p class=muted>Unavailable: {esc(block)}.</p>" if block else ""))
+    msg = ""
+    if last and last["finished"] and last["error"]:
+        msg = f"<p><span class='pill on'>Last scan failed</span> <span class=muted>{esc(last['error'])}</span></p>"
+    head = card("Trading opportunities",
+                "<p class=muted>Ideas found by searching the web and eToro-listed markets. They are research leads, "
+                "not advice, and nothing is traded from this page. Add one to your watchlist to have the agent analyse it, "
+                "with all normal limits and approvals.</p>" + ctl + msg)
+    if good:
+        watched = {i.symbol for i in policy.parse_watchlist(store.get_settings()["watchlist"])}
+        cards = "".join(opportunity_card(o, watched) for o in good["items"])
+        when = f"<p class=muted>Scan #{good['id']} · {esc(good['finished'])}</p>"
+    else:
+        cards, when = "<section class='card c12'><p class=muted>No scan yet. Press the button above.</p></section>", ""
+    return page("Opportunities", head + when + cards, refresh=10 if running else 0, active="Opportunities")
+
+
+@app.post("/opportunities/scan")
+def opportunities_scan():
+    block = opportunities.can_scan()
+    if block:
+        store.log("warn", f"opportunity scan not started: {block}")
+        return back("/opportunities")
+    threading.Thread(target=opportunities.scan, daemon=True).start()
+    return back("/opportunities")
+
+
+@app.post("/opportunities/watch/{symbol}")
+def opportunities_watch(symbol: str):
+    scan = store.latest_scan(ok_only=True)
+    o = next((x for x in (scan["items"] if scan else []) if x["symbol"] == symbol.upper()), None)
+    if not o or not (o.get("etoro") or {}).get("found"):
+        raise HTTPException(404, "not an available opportunity")
+    cur = store.get_settings()["watchlist"]
+    if o["symbol"] not in {i.symbol for i in policy.parse_watchlist(cur)}:
+        store.set_setting("watchlist", f"{cur},{watch_entry(o)}" if cur.strip() else watch_entry(o))
+        store.log("info", f"{o['symbol']} added to watchlist from opportunity scan #{scan['id']}")
+    return back("/opportunities")
 
 
 @app.post("/cancel/{pid}")

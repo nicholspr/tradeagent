@@ -57,6 +57,8 @@ def init() -> None:
                 status TEXT, mode TEXT, created TEXT, decided TEXT, executed TEXT, order_ref TEXT, error TEXT);
             CREATE TABLE IF NOT EXISTS secrets (key TEXT PRIMARY KEY, value TEXT, updated TEXT);
             CREATE TABLE IF NOT EXISTS events (id INTEGER PRIMARY KEY AUTOINCREMENT, ts TEXT, level TEXT, msg TEXT);
+            CREATE TABLE IF NOT EXISTS scans (
+                id INTEGER PRIMARY KEY AUTOINCREMENT, started TEXT, finished TEXT, items TEXT, error TEXT);
             """
         )
         for k, v in DEFAULTS.items():
@@ -214,3 +216,33 @@ def get_secret(key: str) -> str:
         return r["value"] if r else ""
     except sqlite3.OperationalError:
         return ""
+
+
+# ---------------------------------------------------------------- opportunity scans
+def start_scan() -> int:
+    with _lock, connect() as c:
+        return c.execute("INSERT INTO scans(started) VALUES (?)", (_now(),)).lastrowid
+
+
+def finish_scan(scan_id: int, items: list | None, error: str | None = None) -> None:
+    with _lock, connect() as c:
+        c.execute("UPDATE scans SET finished=?, items=?, error=? WHERE id=?",
+                  (_now(), json.dumps(items or []), error, scan_id))
+
+
+def _scan_row(r) -> dict:
+    d = dict(r)
+    d["items"] = json.loads(d["items"] or "[]")
+    return d
+
+
+def latest_scan(ok_only: bool = False) -> dict | None:
+    q = "SELECT * FROM scans" + (" WHERE finished IS NOT NULL AND error IS NULL" if ok_only else "")
+    with _lock, connect() as c:
+        r = c.execute(q + " ORDER BY id DESC LIMIT 1").fetchone()
+    return _scan_row(r) if r else None
+
+
+def scans_since(iso: str) -> int:
+    with _lock, connect() as c:
+        return c.execute("SELECT COUNT(*) FROM scans WHERE started>=?", (iso,)).fetchone()[0]

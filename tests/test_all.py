@@ -1,4 +1,5 @@
 import importlib
+import json
 import os
 import sys
 from datetime import datetime, timedelta, timezone
@@ -408,6 +409,85 @@ def test_cancel_queued_trade_is_logged_and_never_executes(eng, monkeypatch):
     closed["v"] = False                                        # market opens: cancelled trade must stay cancelled
     engine.process_queue()
     assert store.get_proposal(pid)["status"] == "cancelled" and not orders(fs)
+
+
+def test_opportunity_parse_and_source_validation():
+    from app import opportunities as op
+    text = ('Here you go ```json\n{"opportunities": [\n'
+            '{"symbol": "nvda", "name": "NVIDIA", "asset_type": "stock", "thesis": "t", "catalyst": "c", "risks": "r",'
+            ' "horizon": "weeks", "sources": [{"title": "Real", "url": "https://www.reuters.com/a"},'
+            ' {"title": "Made up", "url": "https://fake.example/x"}, {"title": "bad", "url": "javascript:alert(1)"}]},\n'
+            '{"symbol": "NVDA", "sources": [{"url": "https://www.reuters.com/a"}]},\n'
+            '{"symbol": "ZZZ", "sources": [{"title": "x", "url": "https://fake.example/y"}]}]} ```')
+    raw = op.parse(text)
+    out = op.clean(raw, {"https://reuters.com/a/"})
+    assert [o["symbol"] for o in out] == ["NVDA"]                    # duplicate and unsourced ideas dropped
+    assert [s["url"] for s in out[0]["sources"]] == ["https://www.reuters.com/a"]   # only URLs the search returned
+    with pytest.raises(ValueError):
+        op.parse("no json here")
+
+
+def test_opportunity_scan_page_and_watchlist(eng, monkeypatch):
+    engine, store, sent, fs, rating = eng
+    from fastapi.testclient import TestClient
+    from app import web, opportunities as op
+    from app.etoro import EtoroError
+    importlib.reload(web)
+    importlib.reload(op)
+    monkeypatch.setattr(web.sched, "start", lambda: None)
+    monkeypatch.setenv("ANTHROPIC_API_KEY", "x")
+    ideas = {"opportunities": [
+        {"symbol": s, "name": s + " Inc", "asset_type": "crypto" if s == "SOL" else "stock",
+         "thesis": f"<b>{s}</b> thesis", "catalyst": "cat", "risks": "risk", "horizon": "weeks",
+         "sources": [{"title": "Src", "url": f"https://news.example/{s}"}]} for s in ["AAA", "BBB", "SOL", "CCC", "DDD", "EEE"]]}
+    urls = {f"https://news.example/{s}" for s in ["AAA", "BBB", "SOL", "CCC", "DDD", "EEE"]}
+    monkeypatch.setattr(op, "call_model", lambda prompt: ("```" + json.dumps(ideas) + "```", urls))
+
+    class EC:
+        def find_instrument(self, sym):
+            if sym == "BBB":
+                raise EtoroError("not found")
+            return {"tradable": sym != "CCC", "name": sym, "rate": 12.5, "assetClass": "x"}
+    monkeypatch.setattr(op.engine, "client", lambda: EC())
+    with TestClient(web.app) as c:
+        assert "No scan yet" in c.get("/opportunities").text
+        assert ">Opportunities</a>" in c.get("/").text
+        res = op.scan()
+        assert len(res["items"]) == op.COUNT                          # capped at five
+        html = c.get("/opportunities").text
+        assert "Not found on eToro" in html and "market closed" in html and "market open" in html
+        assert "&lt;b&gt;AAA&lt;/b&gt;" in html and "<b>AAA</b>" not in html      # model text is escaped
+        assert "noopener noreferrer" in html and "news.example/AAA" in html
+        assert "/opportunities/watch/BBB" not in html                 # can't watch something eToro lacks
+        assert c.post("/opportunities/watch/BBB").status_code == 404
+        c.post("/opportunities/watch/SOL")
+        c.post("/opportunities/watch/AAA")
+        c.post("/opportunities/watch/AAA")                            # idempotent
+        wl = store.get_settings()["watchlist"]
+        assert wl.endswith("SOL=SOL-USD@crypto,AAA") and wl.count("AAA") == 1
+        assert "On your watchlist" in c.get("/opportunities").text
+        assert not orders(fs)                                         # nothing was ever traded
+        monkeypatch.setattr(op, "MAX_SCANS_PER_DAY", 1)
+        assert "daily scan limit" in op.can_scan()
+        started = []
+        monkeypatch.setattr(op, "scan", lambda: started.append(1))
+        c.post("/opportunities/scan")
+        assert not started                                            # limit enforced on the route too
+
+
+def test_failed_scan_is_recorded_and_not_blocking(eng, monkeypatch):
+    engine, store, sent, fs, rating = eng
+    from app import opportunities as op
+    importlib.reload(op)
+    monkeypatch.setenv("ANTHROPIC_API_KEY", "x")
+    monkeypatch.setattr(op, "call_model", lambda p: ("not json", set()))
+    assert "error" in op.scan()
+    last = store.latest_scan()
+    assert last["finished"] and "parsable" in last["error"]
+    assert op.can_scan() is None
+    store.start_scan()                                                # a scan that never finished
+    assert op.can_scan() == "a scan is already running"
+    assert op.stale({"started": "2020-01-01T00:00:00+00:00"})
 
 
 def test_settings_sections_and_inline_validation(eng, monkeypatch):
