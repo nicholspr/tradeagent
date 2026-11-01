@@ -50,7 +50,7 @@ def _client():
 def call_model(prompt: str) -> tuple[str, set[str]]:
     """Ask Claude (with web search). Returns (final text, set of URLs the searches actually returned)."""
     resp = _client().messages.create(
-        model=config.TA_QUICK_MODEL, max_tokens=6000, system=SYSTEM,
+        model=config.model_for("opp"), max_tokens=6000, system=SYSTEM,
         tools=[{"type": "web_search_20250305", "name": "web_search", "max_uses": MAX_SEARCHES}],
         messages=[{"role": "user", "content": prompt}])
     text, urls = [], set()

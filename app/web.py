@@ -556,7 +556,7 @@ def logs_page():
 
 SETTING_SECTIONS = [
     ("Watchlist and schedule", [
-        ("analyses_per_day", "Analyses per day", "shares", "Cost control: each analysis costs roughly $0.50–$3 in Claude usage."),
+        ("analyses_per_day", "Analyses per day", "shares", "Cost control: each analysis costs roughly $0.15–$3 in Claude usage, depending on the AI models below."),
         ("schedule_time", "Share run time", "UK time, HH:MM", "Weekdays. 15:05 is just after the US market opens."),
         ("crypto_time", "Crypto run time", "UK time, HH:MM", "Daily, for @crypto entries."),
     ]),
@@ -574,6 +574,10 @@ SETTING_SECTIONS = [
 ]
 TOGGLES = [("allow_sells", "Agent may propose sells", "If off, the agent can only buy."),
            ("auto_sells", "Auto mode may sell without approval", "Keep off so sells always need your OK.")]
+MODEL_FIELDS = [("quick_model", "Evidence and debate agents",
+                 "10 agents: the four analysts, Bull, Bear, trader and three risk debaters. Most of the cost is here."),
+                ("deep_model", "Deciding agents", "2 agents: Research Manager and Portfolio Manager, who make the call."),
+                ("opp_model", "Opportunities scan", "Web research on the Opportunities page.")]
 TIME_FIELDS = ("schedule_time", "crypto_time")
 PCT_FIELDS = {"max_position_pct"}
 
@@ -601,6 +605,9 @@ def validate_settings(vals: dict) -> dict:
             errors[k] = "Use 24-hour HH:MM, e.g. 15:05."
     bad = [t for t in (vals.get("watchlist") or "").replace("\n", ",").split(",")
            if t.strip() and not policy.parse_watchlist(t)[0].symbol]
+    for k, *_ in MODEL_FIELDS:
+        if k in vals and vals[k] not in config.MODELS:
+            errors[k] = "Pick a model from the list."
     if bad:
         errors["watchlist"] = "Each entry needs an eToro symbol, e.g. META or BTC=BTC-USD@crypto."
     return errors
@@ -636,6 +643,12 @@ def settings_page(s: dict | None = None, errors: dict | None = None, status: int
                          f"<div class=help>Only these shares are researched, and only these can be bought.</div>"
                          f"<div style='height:12px'></div>")
         sections += f"<div class=fields>{inner}</div>"
+    models = "".join(
+        f"<div><label>{esc(label)}</label><select name={k}{bad(k)}>"
+        + "".join(f"<option value={m} {'selected' if s.get(k) == m else ''}>{esc(t)}</option>" for m, t in config.MODELS.items())
+        + f"</select>{err(k)}<div class=help>{esc(help_)}</div></div>" for k, label, help_ in MODEL_FIELDS)
+    sections += (f"<h3>AI models</h3><div class=fields>{models}</div>"
+                 f"<div class=help>Changes apply to the next analysis. Each run's log line records the models it used.</div>")
     banner = (f"<div class='banner stop' style='border-radius:8px;margin-bottom:12px'>Not saved: fix the "
               f"{len(errors)} highlighted field{'s' if len(errors) != 1 else ''}.</div>") if errors else ""
     limits = (f"{banner}<form method=post action='{B}/settings'>{sections}<p><button>Save settings</button></p></form>")
@@ -711,6 +724,8 @@ async def save_settings(request: Request):
     vals = {k: str(form.get(k, "")).strip() for k in keys}
     vals["allow_sells"] = "on" if form.get("allow_sells") == "on" else "off"
     vals["auto_sells"] = "on" if form.get("auto_sells") == "on" else "off"
+    for k, *_ in MODEL_FIELDS:
+        vals[k] = str(form.get(k) or store.get_settings().get(k, "")).strip()
     errors = validate_settings(vals)
     if errors:
         return settings_page(vals, errors, status=400)

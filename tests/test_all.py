@@ -1233,3 +1233,25 @@ def test_find_instrument_v2_fallback():
     ec = EtoroClient(api_key="a", user_key="b", session=S())
     inst = ec.find_instrument("iucs.l")
     assert inst["instrumentId"] == 1037364 and inst["tradable"] and inst["rate"] == 10.95
+
+
+def test_ai_model_settings(eng, monkeypatch):
+    engine, store, sent, fs, rating = eng
+    from fastapi.testclient import TestClient
+    from app import analyst, config, web
+    monkeypatch.setattr(web.sched, "start", lambda: None)
+    # defaults: cheap model for the 10 evidence/debate agents, Sonnet for the 2 deciders and the scan
+    assert config.model_for("quick") == "claude-haiku-5-5"
+    assert config.model_for("deep") == "claude-sonnet-5" and config.model_for("opp") == "claude-sonnet-5"
+    cfg = analyst.build_config()
+    assert cfg["quick_think_llm"] == "claude-haiku-5-5" and cfg["deep_think_llm"] == "claude-sonnet-5"
+    good = {k: store.get_settings()[k] for k in ["watchlist", *web.NUMERIC, *web.TIME_FIELDS]}
+    with TestClient(web.app) as c:
+        assert "AI models" in c.get("/settings").text
+        r = c.post("/settings", data={**good, "quick_model": "gpt-yolo"})
+        assert r.status_code == 400 and "Pick a model" in r.text
+        assert store.get_settings()["quick_model"] == "claude-haiku-5-5"
+        r = c.post("/settings", data={**good, "quick_model": "claude-sonnet-5"}, follow_redirects=False)
+        assert r.status_code == 303 and config.model_for("quick") == "claude-sonnet-5"
+        r = c.post("/settings", data=good, follow_redirects=False)       # omitted model fields keep their values
+        assert r.status_code == 303 and config.model_for("quick") == "claude-sonnet-5"

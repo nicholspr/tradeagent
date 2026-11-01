@@ -23,6 +23,9 @@ DEFAULTS = {
     "allow_sells": "on",             # agent may propose closing positions
     "auto_sells": "off",             # in auto mode, sells still need approval unless on
     "approval_ttl_hours": "6",
+    "quick_model": "claude-haiku-5-5",   # 10 evidence/debate agents (analysts, bull/bear, trader, risk debaters)
+    "deep_model": "claude-sonnet-5",     # 2 deciding agents (Research Manager, Portfolio Manager)
+    "opp_model": "claude-sonnet-5",      # Opportunities web-search scan
     "daily_reset_at": "",            # set by the Settings "Reset daily limits" button; not a form field
 }
 

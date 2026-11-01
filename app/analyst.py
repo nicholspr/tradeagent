@@ -12,8 +12,8 @@ def build_config() -> dict:
     home = os.path.join(config.DATA_DIR, "tradingagents")
     cfg.update({
         "llm_provider": "anthropic",
-        "deep_think_llm": config.TA_DEEP_MODEL,
-        "quick_think_llm": config.TA_QUICK_MODEL,
+        "deep_think_llm": config.model_for("deep"),
+        "quick_think_llm": config.model_for("quick"),
         "results_dir": os.path.join(home, "logs"),
         "data_cache_dir": os.path.join(home, "cache"),
         "memory_log_path": os.path.join(home, "memory", "trading_memory.md"),

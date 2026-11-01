@@ -109,7 +109,7 @@ def _analyse(item: policy.WatchItem, *, manual: bool) -> dict:
     try:
         inst = ec.find_instrument(item.symbol)
         book = ec.book()
-        store.log("info", f"analysing {item.symbol} ({item.yf}, {item.asset_type})")
+        store.log("info", f"analysing {item.symbol} ({item.yf}, {item.asset_type}) with quick={config.model_for('quick')} deep={config.model_for('deep')}")
         rating, decision = analyst.analyze(item.yf, item.asset_type, _portfolio_context(book))
         store.finish_run(run_id, rating, decision)
     except Exception as e:  # noqa: BLE001

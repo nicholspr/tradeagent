@@ -32,3 +32,19 @@ DATA_DIR = env("DATA_DIR", "/data")
 DRY_RUN = env("DRY_RUN", "false").lower() in ("1", "true", "yes")
 # Set SCHEDULER=off for local runs so they never trigger scheduled analyses or queue processing.
 SCHEDULER_ENABLED = env("SCHEDULER", "on").lower() not in ("0", "off", "false", "no")
+
+
+# Models offered on the Settings page (Anthropic API ids). Prices per million tokens, input/output.
+MODELS = {
+    "claude-haiku-5-5": "Claude Haiku 5.5 · cheapest ($0.10 / $0.50)",
+    "claude-sonnet-5": "Claude Sonnet 5 · stronger ($2 / $10)",
+}
+
+
+def model_for(tier: str) -> str:
+    """Model for 'quick', 'deep' or 'opp': dashboard setting first, then the env default."""
+    from . import store
+    v = (store.get_settings().get(f"{tier}_model") or "").strip()
+    if v:
+        return v
+    return TA_DEEP_MODEL if tier == "deep" else TA_QUICK_MODEL
