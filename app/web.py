@@ -59,6 +59,7 @@ async def lifespan(_app):
     store.init()
     if not config.DRY_RUN:
         engine.apply_live_limits_once()
+    engine.apply_watchlist_fix_once()
     engine.log_settings()
     if config.SCHEDULER_ENABLED:
         schedule_jobs()

@@ -157,6 +157,7 @@ def eng(tmp_path, monkeypatch):
     importlib.reload(engine)
     store.init()
     store.set_setting("live_limits_applied", "test")   # keep test defaults; the go-live change has its own test
+    store.set_setting("watchlist_fix_applied", "test")
     sent = []
     monkeypatch.setattr(notify, "sms", lambda t: sent.append(("sms", t)) or True)
     monkeypatch.setattr(notify, "email", lambda s, b, html=None: sent.append(("email", s)) or True)
@@ -1279,3 +1280,21 @@ def test_account_rules_and_go_live_limits(eng):
     store.set_setting("max_trades_per_day", "6")      # a later edit by the user is respected
     engine.apply_live_limits_once()
     assert store.get_settings()["max_trades_per_day"] == "6"
+
+
+def test_asset_mismatch_blocks_and_watchlist_fix(eng):
+    engine, store, sent, fs, rating = eng
+    from app import policy
+    item = policy.parse_watchlist("CVX")[0]
+    with pytest.raises(engine.EtoroError, match="Convex Finance"):
+        engine._check_asset_match(item, {"name": "Convex Finance", "assetClass": "Crypto"})
+    engine._check_asset_match(item, {"name": "Chevron", "assetClass": "Stocks"})          # fine
+    btc = policy.parse_watchlist("BTC=BTC-USD@crypto")[0]
+    engine._check_asset_match(btc, {"name": "Bitcoin", "assetClass": "Crypto"})            # fine
+    store.set_setting("watchlist_fix_applied", "")
+    store.set_setting("watchlist", "IUCS.L,META,BTC=BTC-USD@crypto,xlv,CVX,CAT")
+    engine.apply_watchlist_fix_once()
+    assert store.get_settings()["watchlist"] == "IUCS.L,META,BTC=BTC-USD@crypto,CVX.US=CVX,CAT"
+    store.set_setting("watchlist", "CVX")            # runs once only; later edits are left alone
+    engine.apply_watchlist_fix_once()
+    assert store.get_settings()["watchlist"] == "CVX"

@@ -102,12 +102,28 @@ def analyse(item: policy.WatchItem, *, manual: bool = False) -> dict:
         _run_lock.release()
 
 
+def _check_asset_match(item: policy.WatchItem, inst: dict) -> None:
+    """Refuse when the eToro symbol is a different kind of asset from the one being researched.
+
+    Example: 'CVX' on eToro is Convex Finance (crypto), while CVX on Yahoo is Chevron (CVX.US on eToro).
+    Researching one and buying the other must never happen.
+    """
+    cls = str(inst.get("assetClass") or "").lower()
+    if not cls:
+        return
+    if (item.asset_type == "crypto") != (cls == "crypto"):
+        raise EtoroError(f"eToro symbol {item.symbol} is {inst.get('name') or '?'} ({inst.get('assetClass')}), "
+                         f"but the watchlist entry is a {item.asset_type}. Fix the symbol in the watchlist "
+                         f"(e.g. CVX.US=CVX for Chevron) before analysing.")
+
+
 def _analyse(item: policy.WatchItem, *, manual: bool) -> dict:
     s = store.get_settings()
     run_id = store.start_run(item.symbol)
     ec = client()
     try:
         inst = ec.find_instrument(item.symbol)
+        _check_asset_match(item, inst)
         book = ec.book()
         store.log("info", f"analysing {item.symbol} ({item.yf}, {item.asset_type}) with quick={config.model_for('quick')} deep={config.model_for('deep')}")
         rating, decision = analyst.analyze(item.yf, item.asset_type, _portfolio_context(book),
@@ -509,3 +525,31 @@ def log_settings() -> None:
             "max_daily_usd", "max_trades_per_day", "cash_buffer_usd", "max_position_pct", "cooldown_days",
             "allow_sells", "auto_sells", "approval_ttl_hours", "quick_model", "deep_model", "opp_model"]
     store.log("info", "settings: " + ", ".join(f"{k}={s.get(k)}" for k in keys))
+
+
+# One-off watchlist fixes found when checking Paul's settings on 1 Nov 2026 (applied once).
+WATCHLIST_FIXES = {"CVX": "CVX.US=CVX",   # eToro 'CVX' is Convex Finance (crypto); Chevron is CVX.US
+                   "XLV": None}           # US ETF is CFD-only for UK accounts; IUHC.L (same sector, UCITS) is already listed
+
+
+def apply_watchlist_fix_once() -> None:
+    s = store.get_settings()
+    if s.get("watchlist_fix_applied"):
+        return
+    out, changes = [], []
+    for raw in (s["watchlist"] or "").replace("\n", ",").split(","):
+        entry = raw.strip()
+        if not entry:
+            continue
+        key = entry.upper()
+        if key in WATCHLIST_FIXES:
+            repl = WATCHLIST_FIXES[key]
+            changes.append(f"{entry} -> {repl or 'removed'}")
+            if repl:
+                out.append(repl)
+        else:
+            out.append(entry)
+    if changes:
+        store.set_setting("watchlist", ",".join(out))
+    store.set_setting("watchlist_fix_applied", datetime.now(timezone.utc).isoformat(timespec="seconds"))
+    store.log("warn", "watchlist fix: " + ("; ".join(changes) if changes else "no change needed"))
