@@ -57,6 +57,9 @@ def schedule_jobs() -> None:
 @asynccontextmanager
 async def lifespan(_app):
     store.init()
+    if not config.DRY_RUN:
+        engine.apply_live_limits_once()
+    engine.log_settings()
     if config.SCHEDULER_ENABLED:
         schedule_jobs()
         sched.start()

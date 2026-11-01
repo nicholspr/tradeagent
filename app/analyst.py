@@ -25,13 +25,27 @@ def build_config() -> dict:
     return cfg
 
 
-def analyze(ticker: str, asset_type: str = "stock", portfolio: dict | None = None,
-            trade_date: str | None = None) -> tuple[str, str]:
-    """Return (rating, final decision text). Rating: Buy/Overweight/Hold/Underweight/Sell/REVIEW."""
-    from tradingagents.graph.trading_graph import TradingAgentsGraph
+def account_context(portfolio: dict, rules: str = ""):
+    """TradingAgents' PortfolioContext plus this account's rules, appended to the portfolio block
+    the deciding agents read (trader, risk debaters, Research and Portfolio Managers)."""
     from tradingagents.portfolio import PortfolioContext
 
-    ctx = PortfolioContext.model_validate(portfolio) if portfolio is not None else None
+    class AccountContext(PortfolioContext):
+        rules: str = ""
+
+        def render(self, ticker: str) -> str:
+            base = super().render(ticker)
+            return f"{base}\n\n{self.rules}" if self.rules else base
+
+    return AccountContext.model_validate({**portfolio, "rules": rules})
+
+
+def analyze(ticker: str, asset_type: str = "stock", portfolio: dict | None = None,
+            trade_date: str | None = None, rules: str = "") -> tuple[str, str]:
+    """Return (rating, final decision text). Rating: Buy/Overweight/Hold/Underweight/Sell/REVIEW."""
+    from tradingagents.graph.trading_graph import TradingAgentsGraph
+
+    ctx = account_context(portfolio, rules) if portfolio is not None else None
     graph = TradingAgentsGraph(debug=False, config=build_config())
     final_state, rating = graph.propagate(ticker, trade_date or date.today().isoformat(),
                                           asset_type=asset_type, portfolio=ctx)

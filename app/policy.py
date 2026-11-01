@@ -123,3 +123,28 @@ def needs_approval(p: Proposal, s: dict) -> bool:
     if mode == "auto" and p.action in ("close", "partial_close") and s.get("auto_sells") != "on":
         return True
     return False
+
+
+def account_rules(s: dict) -> str:
+    """Plain-English account rules for the deciding agents, built from the live settings.
+
+    Informational only: the same limits are enforced in code by check_limits() whatever the agents say.
+    """
+    def n(k):
+        v = _f(s, k)
+        return f"{v:,.0f}" if v == int(v) else f"{v:,.2f}"
+    half = _f(s, "max_trade_usd") / 2
+    sells = ("Underweight sells part of the holding (half of its largest position); Sell closes the whole holding."
+             if s.get("allow_sells") == "on" else "Sells are switched off: Underweight and Sell do nothing.")
+    return (
+        "Account rules (enforced automatically by the platform; they cannot be changed by this analysis):\n"
+        "- Long-only, unleveraged market orders at the current price. Limit, entry, stop-loss and take-profit "
+        "orders are not available, so do not make them the recommended action; price levels may be given only "
+        "as levels for the investor to review.\n"
+        f"- The rating alone sets the trade: Buy opens or adds ${n('max_trade_usd')}; Overweight adds "
+        f"${half:,.2f}; Hold does nothing. {sells}\n"
+        f"- At most ${n('max_daily_usd')} of buys and {n('max_trades_per_day')} trades per day; at least "
+        f"${n('cash_buffer_usd')} cash is always kept; no holding may exceed {n('max_position_pct')}% of the "
+        f"portfolio; at least {n('cooldown_days')} days between trades in the same instrument.\n"
+        "- Sizing advice that differs from these rules will not be followed."
+    )

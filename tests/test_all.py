@@ -156,6 +156,7 @@ def eng(tmp_path, monkeypatch):
     importlib.reload(store)
     importlib.reload(engine)
     store.init()
+    store.set_setting("live_limits_applied", "test")   # keep test defaults; the go-live change has its own test
     sent = []
     monkeypatch.setattr(notify, "sms", lambda t: sent.append(("sms", t)) or True)
     monkeypatch.setattr(notify, "email", lambda s, b, html=None: sent.append(("email", s)) or True)
@@ -163,7 +164,7 @@ def eng(tmp_path, monkeypatch):
     fs = FakeSession()
     monkeypatch.setattr(engine, "client", lambda: etoro.EtoroClient("k", "u", env="real", base="https://x", session=fs))
     rating = {"v": "Buy"}
-    monkeypatch.setattr(engine.analyst, "analyze", lambda t, a, p: (rating["v"], f"FINAL: {rating['v']}"))
+    monkeypatch.setattr(engine.analyst, "analyze", lambda t, a, p, rules="": (rating["v"], f"FINAL: {rating['v']}"))
     return engine, store, sent, fs, rating
 
 
@@ -1255,3 +1256,26 @@ def test_ai_model_settings(eng, monkeypatch):
         assert r.status_code == 303 and config.model_for("quick") == "claude-sonnet-5"
         r = c.post("/settings", data=good, follow_redirects=False)       # omitted model fields keep their values
         assert r.status_code == 303 and config.model_for("quick") == "claude-sonnet-5"
+
+
+def test_account_rules_and_go_live_limits(eng):
+    engine, store, sent, fs, rating = eng
+    from app import analyst, policy
+    s = store.get_settings()
+    rules = policy.account_rules(s)
+    assert "$25" in rules and "$12.50" in rules and "market orders" in rules and "40% of the" in rules
+    ctx = analyst.account_context({"cash": 300.0, "currency": "USD", "positions": []}, rules)
+    block = ctx.render("META")
+    assert block.startswith("Portfolio at the analysis date:") and "Cash available: 300.00 USD" in block
+    assert block.rstrip().endswith("will not be followed.")
+    # the go-live change only tightens, and only once
+    store.set_setting("live_limits_applied", "")
+    store.set_setting("max_trades_per_day", "5")
+    store.set_setting("max_position_pct", "20")      # already stricter than 25: left alone
+    store.set_setting("auto_sells", "on")
+    engine.apply_live_limits_once()
+    s = store.get_settings()
+    assert (s["max_trades_per_day"], s["max_position_pct"], s["cash_buffer_usd"], s["auto_sells"]) == ("3", "20", "50", "off")
+    store.set_setting("max_trades_per_day", "6")      # a later edit by the user is respected
+    engine.apply_live_limits_once()
+    assert store.get_settings()["max_trades_per_day"] == "6"

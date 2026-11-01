@@ -110,7 +110,8 @@ def _analyse(item: policy.WatchItem, *, manual: bool) -> dict:
         inst = ec.find_instrument(item.symbol)
         book = ec.book()
         store.log("info", f"analysing {item.symbol} ({item.yf}, {item.asset_type}) with quick={config.model_for('quick')} deep={config.model_for('deep')}")
-        rating, decision = analyst.analyze(item.yf, item.asset_type, _portfolio_context(book))
+        rating, decision = analyst.analyze(item.yf, item.asset_type, _portfolio_context(book),
+                                            rules=policy.account_rules(s))
         store.finish_run(run_id, rating, decision)
     except Exception as e:  # noqa: BLE001
         store.finish_run(run_id, None, None, error=str(e)[:1000])
@@ -474,3 +475,37 @@ def daily_summary() -> None:
               for p in todays]
     body = "\n".join(lines) + f"\n\nDashboard: {config.PUBLIC_BASE_URL}/"
     notify.email("Daily summary", body)
+
+
+# Settings changes Paul asked for when going live (1 Nov 2026). Applied once, and only ever tightening:
+# a value already stricter than the target is left alone.
+LIVE_TARGETS = {"max_trades_per_day": ("max", 3), "max_position_pct": ("max", 25), "cash_buffer_usd": ("min", 50)}
+
+
+def apply_live_limits_once() -> None:
+    s = store.get_settings()
+    if s.get("live_limits_applied"):
+        return
+    changes = []
+    for k, (kind, target) in LIVE_TARGETS.items():
+        try:
+            cur = float(s[k])
+        except (KeyError, ValueError):
+            continue
+        new = min(cur, target) if kind == "max" else max(cur, target)
+        if new != cur:
+            store.set_setting(k, f"{new:g}")
+            changes.append(f"{k} {s[k]} -> {new:g}")
+    if s.get("auto_sells") != "off":
+        store.set_setting("auto_sells", "off")
+        changes.append(f"auto_sells {s.get('auto_sells')} -> off")
+    store.set_setting("live_limits_applied", datetime.now(timezone.utc).isoformat(timespec="seconds"))
+    store.log("warn", "go-live limits applied (tighten only): " + ("; ".join(changes) if changes else "no change needed"))
+
+
+def log_settings() -> None:
+    s = store.get_settings()
+    keys = ["mode", "kill_switch", "watchlist", "analyses_per_day", "schedule_time", "crypto_time", "max_trade_usd",
+            "max_daily_usd", "max_trades_per_day", "cash_buffer_usd", "max_position_pct", "cooldown_days",
+            "allow_sells", "auto_sells", "approval_ttl_hours", "quick_model", "deep_model", "opp_model"]
+    store.log("info", "settings: " + ", ".join(f"{k}={s.get(k)}" for k in keys))
