@@ -485,7 +485,31 @@ def process_queue() -> None:
         execute(p["id"])
 
 
+def _manual_symbols_today(since: str) -> set[str]:
+    """Symbols started by hand today, from the 'manual analysis of X started' log lines."""
+    out = set()
+    for e in store.events(500):
+        if e["ts"] >= since and e["msg"].startswith("manual analysis of ") and e["msg"].endswith(" started"):
+            out.add(e["msg"][len("manual analysis of "):-len(" started")])
+    return out
+
+
+def next_in_queue() -> list[str]:
+    """Shares the next scheduled share run would pick (least recently analysed first)."""
+    s = store.get_settings()
+    items = policy.parse_watchlist(s["watchlist"])
+    shares = [i for i in items if i.asset_type != "crypto"]
+    crypto = len(items) - len(shares)
+    slots = max(0, int(float(s["analyses_per_day"] or 0)) - crypto)
+    shares.sort(key=lambda i: store.last_run_for(i.symbol) or "")
+    return [i.symbol for i in shares[:slots]]
+
+
 def daily_summary() -> None:
+    s = store.get_settings()
+    since = _day_start_iso()
+    base = config.PUBLIC_BASE_URL
+    book = None
     try:
         book = client().book()
         lines = [f"Portfolio ${book.total_usd:,.2f}, cash ${book.cash_usd:,.2f}"]
@@ -493,14 +517,71 @@ def daily_summary() -> None:
             lines.append(f"  {h.symbol}: ${h.value_usd:,.2f}" + (f" (+${h.pending_usd:.2f} pending)" if h.pending_usd else ""))
     except Exception as e:  # noqa: BLE001
         lines = [f"Portfolio unavailable: {e}"]
-    since = _day_start_iso()
-    todays = [p for p in store.proposals(None, 100) if p["created"] >= since]
-    s = store.get_settings()
-    lines += ["", f"Mode: {s['mode']}  Kill switch: {s['kill_switch']}", f"Today's calls: {len(todays)}"]
-    lines += [f"  #{p['id']} {p['ticker']} {p['rating']} {p['action']} ${p['amount_usd'] or 0:.2f} -> {p['status']}"
-              for p in todays]
-    body = "\n".join(lines) + f"\n\nDashboard: {config.PUBLIC_BASE_URL}/"
+
+    # Analyses
+    runs = [r for r in store.runs(200) if (r["started"] or "") >= since]
+    runs.reverse()
+    manual = _manual_symbols_today(since)
+    limit = int(float(s["analyses_per_day"] or 0))
+    lines += ["", f"Analyses today: {len(runs)} (daily limit {limit}, manual runs included)"]
+    for r in runs:
+        when = _local_hm(r["started"])
+        kind = "manual" if r["ticker"] in manual else "scheduled"
+        result = r["rating"] or ("failed: " + (r["error"] or "")[:80] if r["error"] else "still running")
+        lines.append(f"  {when} {r['ticker']}: {result} ({kind}) {base}/run/{r['id']}")
+    if not runs:
+        lines.append("  none")
+
+    # Trades
+    todays = [p for p in store.proposals(None, 200) if p["created"] >= since]
+    todays.reverse()
+    lines += ["", f"Trades proposed by the app today: {len(todays)}"]
+    for p in todays:
+        what = _describe(p) if p["action"] != "none" else f"{p['ticker']} no trade"
+        why = f" ({(p['error'] or '')[:90]})" if p["status"] in ("failed", "blocked") and p.get("error") else ""
+        lines.append(f"  #{p['id']} {what} | {p['rating']} -> {p['status']}{why}")
+    if not todays:
+        lines.append("  none")
+
+    # Positions opened today that the app did not place
+    if book is not None:
+        app_buys = {}
+        for p in todays:
+            if p["action"] == "buy" and p["status"] == "executed":
+                app_buys[p["instrument_id"]] = app_buys.get(p["instrument_id"], 0) + 1
+        outside = []
+        for h in book.holdings.values():
+            new = [x for x in h.positions if str(x.get("opened") or "") and _is_today(str(x["opened"]), since)]
+            extra = len(new) - app_buys.get(h.instrument_id, 0)
+            if extra > 0:
+                cost = sum(float(x["units"]) * float(x.get("openRate") or 0) * float(x.get("conv") or 1) for x in new[-extra:])
+                outside.append(f"  {h.symbol}: {extra} position(s), about ${cost:,.2f}")
+        if outside:
+            lines += ["", "Bought outside the app today (eToro app or website):", *outside]
+
+    queue = next_in_queue()
+    lines += ["", "Next share run: " + (", ".join(queue) if queue else "nothing scheduled (no share slots left after crypto)"),
+              "", f"Mode: {s['mode']}  Kill switch: {s['kill_switch']}"]
+    body = "\n".join(lines) + f"\n\nDashboard: {base}/"
     notify.email("Daily summary", body)
+
+
+def _local_hm(iso: str) -> str:
+    try:
+        return datetime.fromisoformat(iso).astimezone(ZoneInfo(config.TZ)).strftime("%H:%M")
+    except (ValueError, TypeError):
+        return "?"
+
+
+def _is_today(opened: str, since_iso: str) -> bool:
+    """eToro open times come without a zone (UTC). Compare against the local day start."""
+    try:
+        t = datetime.fromisoformat(opened.replace("Z", "+00:00")[:26])
+    except ValueError:
+        return False
+    if t.tzinfo is None:
+        t = t.replace(tzinfo=timezone.utc)
+    return t >= datetime.fromisoformat(since_iso)
 
 
 # Settings changes Paul asked for when going live (1 Nov 2026). Applied once, and only ever tightening:

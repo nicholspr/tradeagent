@@ -198,7 +198,8 @@ class EtoroClient:
             h.value_usd += val
             h.positions.append({"positionID": int(x["positionID"]), "units": float(x["units"]),
                                 "value_usd": round(val, 2), "openRate": x.get("openRate"),
-                                "conv": float(r.get("conversionRateBid") or 1)})
+                                "conv": float(r.get("conversionRateBid") or 1),
+                                "opened": x.get("openDateTime") or x.get("openTime")})
         frozen = 0.0
         for o in pending:
             iid = int(o["instrumentID"])

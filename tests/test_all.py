@@ -1324,3 +1324,36 @@ def test_held_crypto_is_recognised_by_research_ticker(eng):
     assert "Current position in BTC-USD: 0.000933 units" in ctx.render("BTC-USD")
     assert "Current position in CVX: 0.5 units" in ctx.render("CVX")
     assert "No current position in META" in ctx.render("META") and "MU" in ctx.render("META")
+
+
+def test_daily_summary_lists_analyses_trades_outside_buys_and_queue(eng, monkeypatch):
+    engine, store, sent, fs, rating = eng
+    from datetime import datetime, timezone
+    from types import SimpleNamespace
+    from app import notify
+    store.set_setting("watchlist", "META,GOOG,LLY,BTC=BTC-USD@crypto")
+    store.set_setting("analyses_per_day", "3")
+    rid = store.start_run("GOOG"); store.finish_run(rid, "Hold", "x")
+    store.log("info", "manual analysis of LLY started")
+    rid2 = store.start_run("LLY"); store.finish_run(rid2, "Overweight", "x")
+    pid = store.add_proposal({"run_id": rid2, "ticker": "LLY", "instrument_id": 1567, "action": "buy", "amount_usd": 25,
+                              "units": None, "position_ids": [], "rating": "Overweight", "mode": "auto",
+                              "status": "failed", "reason": ""})
+    store.update_proposal(pid, error="400: Exactly one of Symbol or InstrumentID")
+    now = datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%S.013")
+    book = SimpleNamespace(total_usd=786.0, cash_usd=347.68, holdings={
+        1567: SimpleNamespace(instrument_id=1567, symbol="LLY", value_usd=24.95, pending_usd=0, units=0.0177,
+                              positions=[{"units": 0.017692, "openRate": 1413.0, "conv": 1, "opened": now}]),
+        1003: SimpleNamespace(instrument_id=1003, symbol="META", value_usd=146.6, pending_usd=0, units=0.24,
+                              positions=[{"units": 0.24, "openRate": 559.0, "conv": 1, "opened": "2026-08-03T00:05:07"}])})
+    monkeypatch.setattr(engine, "client", lambda: SimpleNamespace(book=lambda: book))
+    got = {}
+    monkeypatch.setattr(engine.notify, "email", lambda subj, body, html=None: got.update(subj=subj, body=body))
+    engine.daily_summary()
+    body = got["body"]
+    assert "Analyses today: 2 (daily limit 3" in body
+    assert "GOOG: Hold (scheduled)" in body and "LLY: Overweight (manual)" in body
+    assert "#1 BUY LLY $25.00 | Overweight -> failed (400: Exactly one" in body
+    assert "Bought outside the app today" in body and "LLY: 1 position(s), about $25.00" in body
+    assert "META: 1 position" not in body
+    assert "Next share run: META, GOOG" in body            # never-analysed META first, then least recent
