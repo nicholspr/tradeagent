@@ -1308,3 +1308,18 @@ def test_scheduled_hold_is_emailed(eng):
     assert ("email", "META: Hold (scheduled)") in sent
     engine.analyse(policy.parse_watchlist("META")[0], manual=True)
     assert ("email", "META: Hold") in sent
+
+
+def test_held_crypto_is_recognised_by_research_ticker(eng):
+    engine, store, sent, fs, rating = eng
+    from types import SimpleNamespace
+    from app import analyst
+    store.set_setting("watchlist", "META,BTC=BTC-USD@crypto,CVX.US=CVX")
+    book = SimpleNamespace(cash_usd=372.68, holdings={
+        1: SimpleNamespace(symbol="BTC", units=0.000933, positions=[{"openRate": 73054.62, "units": 0.000933}]),
+        2: SimpleNamespace(symbol="CVX.US", units=0.5, positions=[{"openRate": 230.0, "units": 0.5}]),
+        3: SimpleNamespace(symbol="MU", units=0.08665, positions=[{"openRate": 1038.65, "units": 0.08665}])})
+    ctx = analyst.account_context(engine._portfolio_context(book))
+    assert "Current position in BTC-USD: 0.000933 units" in ctx.render("BTC-USD")
+    assert "Current position in CVX: 0.5 units" in ctx.render("CVX")
+    assert "No current position in META" in ctx.render("META") and "MU" in ctx.render("META")

@@ -55,9 +55,18 @@ def link_for(p: dict) -> str:
     return f"{config.PUBLIC_BASE_URL}/p/{p['id']}/{token_for(p['id'], p['created'])}"
 
 
+def _research_ticker(etoro_symbol: str) -> str:
+    """The ticker the agents research for an eToro symbol (watchlist 'SYM=yf' mapping), so a held position is
+    recognised as the analysed instrument: eToro BTC is researched as BTC-USD, CVX.US as CVX."""
+    for item in policy.parse_watchlist(store.get_settings()["watchlist"]):
+        if item.symbol == etoro_symbol.upper():
+            return item.yf
+    return etoro_symbol
+
+
 def _portfolio_context(book) -> dict:
     return {"cash": book.cash_usd, "currency": "USD",
-            "positions": [{"ticker": h.symbol, "quantity": round(h.units, 6),
+            "positions": [{"ticker": _research_ticker(h.symbol), "quantity": round(h.units, 6),
                            "average_price": (round(sum(p["openRate"] * p["units"] for p in h.positions) / h.units, 4)
                                              if h.units else None)}
                           for h in book.holdings.values() if h.units > 0]}
