@@ -150,8 +150,9 @@ def _act(symbol, inst, book, s, rating, decision, run_id, prop, manual=False) ->
 
     if prop.action == "none":
         store.log("info", f"{symbol}: {prop.reason}")
-        if manual or rating.lower() not in ("hold",):
-            notify.email(f"{symbol}: {rating}", f"{prop.reason}\n\n{decision}\n\n{config.PUBLIC_BASE_URL}/run/{run_id}")
+        # Every analysis is emailed, scheduled Holds included, so it is easy to see that runs are happening.
+        notify.email(f"{symbol}: {rating}{'' if manual else ' (scheduled)'}",
+                     f"{prop.reason}\n\n{decision}\n\n{config.PUBLIC_BASE_URL}/run/{run_id}")
         return {"rating": rating, "action": "none"}
 
     # Size against limits now (tradable assumed; re-checked at execution time).

@@ -1298,3 +1298,13 @@ def test_asset_mismatch_blocks_and_watchlist_fix(eng):
     store.set_setting("watchlist", "CVX")            # runs once only; later edits are left alone
     engine.apply_watchlist_fix_once()
     assert store.get_settings()["watchlist"] == "CVX"
+
+
+def test_scheduled_hold_is_emailed(eng):
+    engine, store, sent, fs, rating = eng
+    from app import policy
+    rating["v"] = "Hold"
+    engine.analyse(policy.parse_watchlist("META")[0])                 # scheduled (not manual)
+    assert ("email", "META: Hold (scheduled)") in sent
+    engine.analyse(policy.parse_watchlist("META")[0], manual=True)
+    assert ("email", "META: Hold") in sent
