@@ -212,7 +212,9 @@ class EtoroClient:
     # ---- trading --------------------------------------------------------
     def open_buy(self, symbol: str, instrument_id: int, amount_usd: float) -> dict:
         path = "/api/v2/trading/execution/demo/orders" if self.demo else "/api/v2/trading/execution/orders"
-        body = {"action": "open", "transaction": "buy", "symbol": symbol, "instrumentId": instrument_id,
+        # eToro rejects open orders that carry both symbol and instrumentId ("exactly one" must be given).
+        # The id is unambiguous (eToro 'CVX' is a crypto token, Chevron is 'CVX.US'), so send only that.
+        body = {"action": "open", "transaction": "buy", "instrumentId": int(instrument_id),
                 "orderType": "mkt", "leverage": 1, "amount": round(float(amount_usd), 2),
                 "orderCurrency": "usd"}
         if self.demo:

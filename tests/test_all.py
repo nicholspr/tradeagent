@@ -137,6 +137,7 @@ def test_etoro_book_and_orders():
     ec.open_buy("META", 1003, 20)
     m, url, _, body, h = fs.calls[-1]
     assert url.endswith("/api/v2/trading/execution/orders") and body["leverage"] == 1 and body["amount"] == 20
+    assert body["instrumentId"] == 1003 and "symbol" not in body          # eToro: exactly one of symbol/instrumentId
     assert h["x-api-key"] == "k" and h["x-request-id"]
     ec.close_position(11, 1003, 0.1)
     assert fs.calls[-1][1].endswith("/api/v1/trading/execution/market-close-orders/positions/11")
