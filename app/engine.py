@@ -1,11 +1,12 @@
 """Orchestration: analyse -> propose -> (signal | approve | auto-execute) -> notify."""
 import hashlib
+from html import escape
 import hmac
 import threading
 from datetime import datetime, timedelta, timezone
 from zoneinfo import ZoneInfo
 
-from . import analyst, config, levels, notify, policy, store
+from . import analyst, config, levels, notify, performance, policy, store
 from .etoro import EtoroClient, EtoroError
 
 _run_lock = threading.Lock()          # one analysis at a time (LLM cost + rate limits)
@@ -552,12 +553,14 @@ def daily_summary() -> None:
     s = store.get_settings()
     since = _day_start_iso()
     base = config.PUBLIC_BASE_URL
-    book = None
+    book, html_part = None, None
     try:
-        book = client().book()
-        lines = [f"Portfolio ${book.total_usd:,.2f}, cash ${book.cash_usd:,.2f}"]
-        for h in sorted(book.holdings.values(), key=lambda h: -h.value_usd):
-            lines.append(f"  {h.symbol}: ${h.value_usd:,.2f}" + (f" (+${h.pending_usd:.2f} pending)" if h.pending_usd else ""))
+        ec = client()
+        book = ec.book()
+        perf = performance.compute(ec, book)
+        prev = performance.snapshot(perf, datetime.now(ZoneInfo(config.TZ)).date().isoformat())
+        lines = performance.text(perf, prev)
+        html_part = performance.html(perf, prev)
     except Exception as e:  # noqa: BLE001
         lines = [f"Portfolio unavailable: {e}"]
 
@@ -610,7 +613,13 @@ def daily_summary() -> None:
     lines += ["", "Next share run: " + (", ".join(queue) if queue else "nothing scheduled (no share slots left after crypto)"),
               "", f"Mode: {s['mode']}  Kill switch: {s['kill_switch']}"]
     body = "\n".join(lines) + f"\n\nDashboard: {base}/"
-    notify.email("Daily summary", body)
+    html_body = None
+    if html_part:
+        rest = "\n".join(lines[len(performance.text(perf, prev)):])
+        html_body = (f"<div style='font-family:sans-serif'>{html_part}"
+                     f"<pre style='font-family:sans-serif;white-space:pre-wrap'>{escape(rest)}</pre>"
+                     f"<p><a href='{base}/'>Dashboard</a></p></div>")
+    notify.email("Daily summary", body, html=html_body)
 
 
 def _local_hm(iso: str) -> str:

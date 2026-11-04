@@ -1440,3 +1440,38 @@ def test_watch_levels_backfill_from_saved_reports(eng, monkeypatch):
     assert len(lv) == 1 and lv[0]["run_id"] == r1
     assert levels.backfill(type("EC", (), {"find_instrument": lambda self, s: {"rate": 600.0}})(),
                            policy.parse_watchlist("META")) == []                          # already has one
+
+
+def test_daily_performance_day_change_and_vs_cost(eng):
+    engine, store, sent, fs, rating = eng
+    from datetime import datetime, timezone
+    from app import performance
+    from app.etoro import Book, Holding
+    now = datetime(2026, 11, 4, 21, 30, tzinfo=timezone.utc)
+    meta = Holding(1003, "META", units=0.25, value_usd=0.25 * 610,
+                   positions=[{"positionID": 1, "units": 0.25, "openRate": 559.0, "conv": 1, "opened": "2026-08-03T00:05:07"}])
+    lly = Holding(1567, "LLY", units=0.02, value_usd=0.02 * 1420,
+                  positions=[{"positionID": 2, "units": 0.02, "openRate": 1413.0, "conv": 1, "opened": "2026-11-04T15:08:35.013"}])
+    book = Book(cash_usd=300.0, total_usd=300 + 152.5 + 28.4, holdings={1003: meta, 1567: lly})
+
+    class EC:
+        def candles(self, iid, interval, n):
+            prev = {1003: 600.0, 1567: 1400.0}[iid]
+            return [{"date": "2026-11-03T00:00:00Z", "open": 1, "high": 1, "low": 1, "close": prev},
+                    {"date": "2026-11-04T00:00:00Z", "open": 1, "high": 1, "low": 1, "close": 999}]   # today: ignored
+    perf = performance.compute(EC(), book, now)
+    r = {x["symbol"]: x for x in perf["rows"]}
+    assert r["META"]["day"] == pytest.approx(0.25 * 10) and r["META"]["day_pct"] == pytest.approx(10 / 600 * 100)
+    assert r["META"]["pnl"] == pytest.approx(0.25 * (610 - 559)) and r["META"]["cost"] == pytest.approx(139.75)
+    assert r["LLY"]["day"] == pytest.approx(0.02 * 7)                 # bought today: from open price, not prior close
+    assert "bought today" in r["LLY"]["note"]
+    assert perf["day"] == pytest.approx(2.5 + 0.14)
+    assert performance.snapshot(perf, "2026-11-03") is None
+    store_total = perf["total"]
+    perf["total"] += 5
+    prev = performance.snapshot(perf, "2026-11-04")
+    assert prev["day"] == "2026-11-03" and prev["total"] == pytest.approx(store_total)
+    txt = "\n".join(performance.text(perf, prev))
+    assert "Holdings on the day: +$2.64" in txt and "Total vs 2026-11-03: +$5.00" in txt
+    assert "META: $152.50 | today +$2.50 (+1.7%) | +$12.75 (+9.1%) vs cost $139.75" in txt
+    assert "<table" in performance.html(perf, prev) and "#137333" in performance.html(perf, prev)

@@ -167,6 +167,18 @@ def record_none(ticker: str) -> None:
         c.execute("UPDATE levels SET status='replaced' WHERE ticker=? AND status='watching'", (ticker,))
 
 
+def _is_opened_today(opened, now: datetime) -> bool:
+    if not opened:
+        return False
+    try:
+        t = datetime.fromisoformat(str(opened).replace("Z", "+00:00")[:26])
+    except ValueError:
+        return False
+    if t.tzinfo is None:
+        t = t.replace(tzinfo=timezone.utc)
+    return t.date() == now.date()
+
+
 def _completed_daily(candles: list[dict], now: datetime) -> dict | None:
     """The most recent daily candle that has finished (today's candle is still forming)."""
     today = now.date().isoformat()
