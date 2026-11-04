@@ -12,7 +12,7 @@ from apscheduler.triggers.cron import CronTrigger
 from fastapi import FastAPI, Form, HTTPException, Request
 from fastapi.responses import HTMLResponse, RedirectResponse
 
-from . import performance, config, engine, markets, opportunities, policy, store
+from . import performance, scorecard, config, engine, markets, opportunities, policy, store
 
 sched = BackgroundScheduler(timezone=config.TZ)
 
@@ -151,7 +151,8 @@ input.invalid,textarea.invalid{border-color:#dc2626;box-shadow:0 0 0 2px #dc2626
 }
 """
 
-NAV = [("Overview", "/"), ("Opportunities", "/opportunities"), ("Logs", "/logs"), ("Settings", "/settings")]
+NAV = [("Overview", "/"), ("Opportunities", "/opportunities"), ("Scorecard", "/scorecard"), ("Logs", "/logs"),
+       ("Settings", "/settings")]
 
 
 MODE_LABELS = {"signals": "Signals only", "approval": "Approval", "auto": "Automatic"}
@@ -571,6 +572,64 @@ def levels_backfill():
 def watchlist_refresh():
     markets.invalidate()
     return back()
+
+
+def _sc_pct(x, good=None):
+    if x is None:
+        return "<td class=muted>—</td>"
+    col = "" if good is None else ("color:#4ade80" if good else "color:#f87171")
+    return f"<td style='{col}'>{x:+.1f}%</td>"
+
+
+def _sc_table(groups: list[dict], first: str) -> str:
+    head = f"<tr><th>{first}</th><th>Calls</th>" + "".join(
+        f"<th>{h}d return</th><th>{h}d vs {scorecard.BENCHMARK}</th><th>{h}d worked</th>" for h in scorecard.HORIZONS) + "</tr>"
+    body = ""
+    for g in groups:
+        body += f"<tr><td><b>{esc(str(g['name']))}</b></td><td>{g['count']}</td>"
+        for h in scorecard.HORIZONS:
+            vs = g["avg_vs"][h]
+            hit = g["hits"][h]
+            body += _sc_pct(g["avg"][h]) + _sc_pct(vs, None if vs is None else vs > 0)
+            body += (f"<td>{hit:.0f}% <span class=muted>of {g['scored'][h]}</span></td>" if hit is not None
+                     else f"<td class=muted>{'pending' if g['pending'][h] else '—'}</td>")
+        body += "</tr>"
+    return table(body or "<tr><td class=muted>No rated analyses yet.</td></tr>", head)
+
+
+@app.get("/scorecard", response_class=HTMLResponse)
+def scorecard_page(refresh: int = 0):
+    if refresh:
+        scorecard.clear_cache()
+    try:
+        rows = scorecard.evaluate(engine.client(), store.runs(1000))
+    except Exception as e:  # noqa: BLE001
+        return page("Scorecard", card("Scorecard", f"<p class=muted>Unavailable: {esc(str(e))}</p>"), active="Scorecard")
+    calls = ""
+    for r in sorted(rows, key=lambda r: -r["id"])[:60]:
+        start = "" if r["start"] is None else f"{r['start']:,.6g}"
+        calls += (f"<tr><td><a href='{B}/run/{r['id']}'>#{r['id']}</a></td><td>{r['day']}</td><td><b>{esc(r['ticker'])}</b></td>"
+                  f"<td>{rating_pill(r['rating'])}</td><td>{start}</td>")
+        for h in scorecard.HORIZONS:
+            w = scorecard.worked(r, h)
+            calls += _sc_pct(r["returns"].get(h)) + _sc_pct(r["vs"].get(h), w)
+        calls += f"<td class=muted>{esc(scorecard._short(r['models']))}{(' · ' + esc(r['note'])) if r['note'] else ''}</td></tr>"
+    calls_head = ("<tr><th>Run</th><th>Date</th><th>Symbol</th><th>Rating</th><th>Price then</th>"
+                  + "".join(f"<th>{h}d</th><th>{h}d vs bench</th>" for h in scorecard.HORIZONS) + "<th>Models</th></tr>")
+    intro = (f"<p>{esc(scorecard.headline(rows))}.</p><p class=muted>Each call is measured from the price at the time "
+             f"of the analysis to the close {', '.join(str(h) for h in scorecard.HORIZONS)} trading days later, and compared "
+             f"with {scorecard.BENCHMARK} (Vanguard FTSE All-World) over the same dates. A Buy or Overweight <b>worked</b> "
+             "if the share beat the benchmark; an Underweight or Sell worked if it lagged it. Holds are shown but not "
+             "scored. Results need many calls before they mean much: treat anything under 20 calls as anecdote.</p>"
+             f"<p><a class=muted href='{B}/scorecard?refresh=1'>Refresh prices</a></p>")
+    body = ("<div class=layout>"
+            + card("Does it work?", intro, "c12")
+            + card("By rating", _sc_table(scorecard.by_rating(rows), "Rating"), "c12")
+            + card("By AI models (Buy, Overweight, Underweight, Sell calls)", _sc_table(scorecard.by_models(rows), "Models"), "c12")
+            + card("By symbol", _sc_table(scorecard.by_ticker(rows), "Symbol"), "c12")
+            + card("Every call", table(calls or "<tr><td class=muted>None yet.</td></tr>", calls_head), "c12")
+            + "</div>")
+    return page("Scorecard", body, active="Scorecard")
 
 
 @app.get("/logs", response_class=HTMLResponse)

@@ -141,6 +141,7 @@ def _analyse(item: policy.WatchItem, *, manual: bool) -> dict:
     try:
         inst = ec.find_instrument(item.symbol)
         _check_asset_match(item, inst)
+        store.set_run_meta(run_id, _float(inst.get("rate")), f"{config.model_for('quick')}/{config.model_for('deep')}")
         book = ec.book()
         store.log("info", f"analysing {item.symbol} ({item.yf}, {item.asset_type}) with quick={config.model_for('quick')} deep={config.model_for('deep')}")
         rules = policy.account_rules(s)
@@ -609,6 +610,12 @@ def daily_summary() -> None:
     if watching:
         lines += ["", "Watch levels:"] + [f"  {lv['ticker']}: {levels.describe(lv)} [{'MET' if lv['status'] == 'triggered' else 'watching'}]"
                                           for lv in watching]
+    try:
+        from . import scorecard
+        lines += ["", "Scorecard: " + scorecard.headline(scorecard.evaluate(client(), store.runs(1000))),
+                  f"  {base}/scorecard"]
+    except Exception as e:  # noqa: BLE001
+        lines += ["", f"Scorecard unavailable: {e}"]
     queue = next_in_queue()
     lines += ["", "Next share run: " + (", ".join(queue) if queue else "nothing scheduled (no share slots left after crypto)"),
               "", f"Mode: {s['mode']}  Kill switch: {s['kill_switch']}"]

@@ -73,6 +73,10 @@ def init() -> None:
                 status TEXT, checked TEXT, last_close REAL, triggered TEXT, trigger_info TEXT);
             """
         )
+        run_cols = [r["name"] for r in c.execute("PRAGMA table_info(runs)")]
+        for col, kind in (("price", "REAL"), ("models", "TEXT")):
+            if col not in run_cols:
+                c.execute(f"ALTER TABLE runs ADD COLUMN {col} {kind}")      # scorecard: price and models at analysis
         if "override" not in [r["name"] for r in c.execute("PRAGMA table_info(proposals)")]:
             c.execute("ALTER TABLE proposals ADD COLUMN override INTEGER DEFAULT 0")   # existing databases
         for k, v in DEFAULTS.items():
@@ -122,6 +126,11 @@ def finish_run(run_id: int, rating: str | None, decision: str | None, error: str
     with _lock, connect() as c:
         c.execute("UPDATE runs SET finished=?, rating=?, decision=?, error=? WHERE id=?",
                   (_now(), rating, (decision or "")[:40000], error, run_id))
+
+
+def set_run_meta(run_id: int, price: float | None, models: str) -> None:
+    with _lock, connect() as c:
+        c.execute("UPDATE runs SET price=?, models=? WHERE id=?", (price, models, run_id))
 
 
 def runs(limit: int = 30) -> list:

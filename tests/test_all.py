@@ -1487,3 +1487,63 @@ def test_seeded_previous_day_is_used_for_comparison(eng):
     assert prev["day"] == "2026-11-03" and prev["total"] == 794.06
     assert "Total vs 2026-11-03: +$5.94" in "\n".join(performance.text({**perf, "invested_value": 380.42, "day": 0,
                                                                        "day_pct": None, "pnl": None}, prev))
+
+
+def test_scorecard_returns_vs_benchmark_and_hit_rates(eng, monkeypatch):
+    engine, store, sent, fs, rating = eng
+    from datetime import datetime, timezone, timedelta
+    from app import scorecard
+    scorecard.clear_cache()
+    days = [(datetime(2026, 9, 1) + timedelta(days=i)).strftime("%Y-%m-%dT00:00:00Z") for i in range(80)]
+    series = {"VWRL.L": [100 + i * 0.1 for i in range(80)],          # benchmark +0.1/day
+              "AAA": [10 + i * 0.1 for i in range(80)],              # strong riser
+              "BBB": [50 - i * 0.2 for i in range(80)]}              # faller
+    ids = {"VWRL.L": 1, "AAA": 2, "BBB": 3}
+
+    class EC:
+        def find_instrument(self, s):
+            return {"instrumentId": ids[s]}
+        def candles(self, iid, interval, n):
+            sym = {v: k for k, v in ids.items()}[iid]
+            return [{"date": d, "open": c, "high": c, "low": c, "close": c} for d, c in zip(days, series[sym])]
+
+    def run(t, rating, day, price=None, models=None):
+        return {"id": len(runs) + 1, "ticker": t, "rating": rating, "started": f"{day}T15:05:00+00:00",
+                "price": price, "models": models}
+    runs = []
+    runs.append(run("AAA", "Buy", "2026-09-02"))                       # rises faster than benchmark: worked
+    runs.append(run("BBB", "Overweight", "2026-09-02", models="claude-haiku-5-5/claude-sonnet-5"))   # falls: did not
+    runs.append(run("BBB", "Sell", "2026-09-03"))                      # falls: worked
+    runs.append(run("AAA", "Hold", "2026-09-02"))                      # not scored
+    runs.append(run("AAA", "Buy", "2026-11-18", models="claude-haiku-5-5/claude-sonnet-5"))   # too recent: pending
+    runs.append({"id": 99, "ticker": "AAA", "rating": None, "started": "2026-09-02T15:05:00+00:00"})  # failed run: skipped
+    now = datetime(2026, 11, 20, 21, 0, tzinfo=timezone.utc)
+    rows = scorecard.evaluate(EC(), runs, now)
+    assert len(rows) == 5
+    r0 = rows[0]
+    assert r0["start"] == pytest.approx(10.1) and r0["returns"][5] == pytest.approx((10.6 / 10.1 - 1) * 100)
+    assert r0["vs"][5] == pytest.approx((10.6 / 10.1 - 1) * 100 - (100.6 / 100.1 - 1) * 100)
+    assert scorecard.worked(rows[0], 20) is True and scorecard.worked(rows[1], 20) is False
+    assert scorecard.worked(rows[2], 20) is True and scorecard.worked(rows[3], 20) is None
+    assert rows[4]["returns"] == {}                                    # pending
+    g = {x["name"]: x for x in scorecard.by_rating(rows)}
+    assert g["Buy"]["count"] == 2 and g["Buy"]["scored"][5] == 1 and g["Buy"]["hits"][5] == 100 and g["Buy"]["pending"][5] == 1
+    m = {x["name"]: x for x in scorecard.by_models(rows)}
+    assert set(m) == {"Sonnet 5 / Sonnet 5", "Haiku 5.5 / Sonnet 5"}
+    assert "Buy/Overweight calls after 5 trading days" in scorecard.headline(rows) and "50% beat it (2 calls)" in scorecard.headline(rows)
+    # recorded price at the time of the call wins over the day's close
+    scorecard.clear_cache()
+    rows = scorecard.evaluate(EC(), [run("AAA", "Buy", "2026-09-02", price=10.0)], now)
+    assert rows[0]["start"] == 10.0
+
+
+def test_scorecard_page_renders(eng, monkeypatch):
+    engine, store, sent, fs, rating = eng
+    from fastapi.testclient import TestClient
+    from app import web, scorecard
+    monkeypatch.setattr(web.sched, "start", lambda: None)
+    monkeypatch.setattr(scorecard, "evaluate", lambda ec, runs, now=None: [])
+    with TestClient(web.app) as c:
+        r = c.get("/scorecard")
+        assert r.status_code == 200 and "Does it work?" in r.text and "Not enough history yet" in r.text
+        assert "/scorecard" in c.get("/").text                           # in the top menu

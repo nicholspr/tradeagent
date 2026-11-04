@@ -174,7 +174,7 @@ This gets around eToro not accepting waiting orders on some instruments (for exa
 
 ## 6. Dashboard pages
 
-The top menu has **Overview, Opportunities, Logs and Settings**. The layout is a full-width grid on a PC and a single column on a phone. It uses a dark theme and refreshes every 30 seconds while an analysis is running.
+The top menu has **Overview, Opportunities, Scorecard, Logs and Settings**. The layout is a full-width grid on a PC and a single column on a phone. It uses a dark theme and refreshes every 30 seconds while an analysis is running.
 
 ### Overview
 - **Status strip and warning banners:** the account (REAL or DEMO), test mode, kill switch, and warnings such as missing keys.
@@ -199,6 +199,20 @@ The top menu has **Overview, Opportunities, Logs and Settings**. The layout is a
 - **Checking the ideas:** every idea must cite a source that the search actually returned, and each one is checked against eToro (found, tradable, price).
 - **Adding to the watchlist:** **Watch** adds an idea to the watchlist in the right format.
 - **Limits:** at most **3 scans a day**. The page never places or queues a trade.
+
+### Scorecard: does it work?
+- **What it measures:** every finished analysis, from the price at the time of the call to the close **5, 20 and 60 trading days** later. Each result is compared with **VWRL.L** (Vanguard FTSE All-World) over the same dates.
+- **What counts as worked:** a Buy or Overweight **worked** if the share then beat the benchmark; an Underweight or Sell worked if it lagged it. Holds are shown but not scored.
+- **Tables:**
+  - **by rating:** whether Buy calls really beat Holds;
+  - **by AI models**, evidence agents / deciding agents: whether Haiku performs as well as Sonnet;
+  - **by symbol;**
+  - **every call**, linked to its report.
+
+  Each table shows average return, average against the benchmark, and the share of calls that worked.
+- **How prices are recorded:** from 4 Nov 2026 each analysis records its price and models at the time. Earlier runs use that day's close, and are treated as all-Sonnet if before 1 Nov 22:44 UTC.
+- **Caching and refresh:** prices come from eToro daily candles, cached for 4 hours; **Refresh prices** forces a reload. The daily summary includes a one-line headline.
+- **How to read it:** treat fewer than about 20 scored calls as anecdote. The first 5-day results appear a week after the first calls, and 60-day results after about three months.
 
 ### Logs
 - **Recent calls:** every proposal with rating, trade, status and reason.
@@ -234,8 +248,9 @@ Email is sent through Gmail and SMS through Twilio. Both are optional.
 3. **Trades proposed by the app**, with their outcome and the reason for any failure or block.
 4. **Bought outside the app today:** positions opened in the eToro app or website.
 5. **Watch levels** and their status.
-6. **Next share run:** the shares lined up for the next 15:05.
-7. **Mode and kill switch.**
+6. **Scorecard headline:** how Buy and Overweight calls have done against VWRL.L so far.
+7. **Next share run:** the shares lined up for the next 15:05.
+8. **Mode and kill switch.**
 
 Each evening's totals are saved, so the next day can compare against them.
 
@@ -293,7 +308,7 @@ Removing an entry does not sell it; holdings stay until sold. London (`.L`) inst
 
 ```bash
 pip install -r requirements.txt
-python -m pytest -q tests          # 58 tests, all offline (fakes for eToro, Claude, email)
+python -m pytest -q tests          # 60 tests, all offline (fakes for eToro, Claude, email)
 DATA_DIR=./data uvicorn app.web:app --reload
 ```
 
@@ -307,6 +322,7 @@ On Windows, `run-local.bat` runs the full app at `http://localhost:8000/`. It al
 | `app/policy.py` | Watchlist parsing, rating → proposal, hard limits, approval rules, and the account-rules text. Pure functions, fully tested. |
 | `app/engine.py` | Analysis, proposals, approval, execution, the queue, scheduled runs, pre-flight, overrides, the daily summary, the audit trail and one-off fixes. |
 | `app/levels.py` | Watch levels: extraction, the overnight check, queue priority, agent notes and backfill. |
+| `app/scorecard.py` | Scorecard: returns after each call at 5, 20 and 60 days against VWRL.L, hit rates by rating, models and symbol. |
 | `app/performance.py` | End-of-day performance per holding, daily snapshots, and the summary's text and HTML. |
 | `app/etoro.py` | eToro API client: instrument lookup (with fallback), rates, candles, portfolio "book", open and close orders. |
 | `app/markets.py` | Read-only market data for the dashboard: sparklines, 52-week range, sentiment, market open or closed, caching. |
