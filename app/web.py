@@ -62,6 +62,8 @@ async def lifespan(_app):
     if not config.DRY_RUN:
         engine.apply_live_limits_once()
     engine.apply_watchlist_fix_once()
+    if config.SCHEDULER_ENABLED:
+        engine.backfill_levels_once()
     engine.log_settings()
     if config.SCHEDULER_ENABLED:
         schedule_jobs()
@@ -537,9 +539,12 @@ def dashboard():
 
 def levels_card() -> str:
     from . import levels
+    button = (f"<form method=post action='{B}/levels/backfill' style='margin-top:10px'><button class=sec>"
+              f"Read conditions from latest reports</button> <span class=muted>no new analysis; fills symbols that "
+              f"have none, from reports up to {levels.BACKFILL_DAYS} days old</span></form>")
     rows = levels.active()
     if not rows:
-        return ("<p class=muted>None yet. When an analysis says to wait for a price (a breakout above a level, or a "
+        return button + ("<p class=muted>None yet. When an analysis says to wait for a price (a breakout above a level, or a "
                 "pull-back into a zone) the condition appears here and is checked every morning.</p>")
     body = ""
     for lv in rows:
@@ -552,7 +557,13 @@ def levels_card() -> str:
     return table(body, "<tr><th>Symbol</th><th>Buy condition</th><th>Status</th><th>Last close</th><th>Expires</th>"
                        "<th>From run</th></tr>") + (
         "<p class=muted>A met condition moves the share to the front of the next scheduled analysis. "
-        "The new analysis decides whether to trade; nothing is bought from a condition alone.</p>")
+        "The new analysis decides whether to trade; nothing is bought from a condition alone.</p>") + button
+
+
+@app.post("/levels/backfill")
+def levels_backfill():
+    engine.backfill_levels()
+    return back()
 
 
 @app.post("/watchlist/refresh")

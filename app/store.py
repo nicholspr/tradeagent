@@ -28,7 +28,8 @@ DEFAULTS = {
     "opp_model": "claude-sonnet-5",      # Opportunities web-search scan
     "daily_reset_at": "",
     "live_limits_applied": "",
-    "watchlist_fix_applied": "",     # set once by engine.apply_watchlist_fix_once()       # set once by engine.apply_live_limits_once()            # set by the Settings "Reset daily limits" button; not a form field
+    "watchlist_fix_applied": "",
+    "levels_backfill_applied": "",   # set once by engine.backfill_levels_once()     # set once by engine.apply_watchlist_fix_once()       # set once by engine.apply_live_limits_once()            # set by the Settings "Reset daily limits" button; not a form field
 }
 
 _lock = threading.RLock()

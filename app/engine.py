@@ -525,6 +525,22 @@ def next_in_queue() -> list[str]:
     return [i.symbol for i in shares[:slots]]
 
 
+def backfill_levels() -> list[str]:
+    try:
+        return levels.backfill(client(), policy.parse_watchlist(store.get_settings()["watchlist"]))
+    except Exception as e:  # noqa: BLE001
+        store.log("error", f"watch levels backfill failed: {e}")
+        return []
+
+
+def backfill_levels_once() -> None:
+    """First start with watch levels: read this week's saved reports once, in the background."""
+    if store.get_settings().get("levels_backfill_applied"):
+        return
+    store.set_setting("levels_backfill_applied", datetime.now(timezone.utc).isoformat(timespec="seconds"))
+    threading.Thread(target=backfill_levels, daemon=True).start()
+
+
 def check_levels() -> None:
     try:
         levels.overnight(client())

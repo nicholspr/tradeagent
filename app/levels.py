@@ -133,9 +133,11 @@ def _set(lid: int, **cols) -> None:
         c.execute(f"UPDATE levels SET {', '.join(k + '=?' for k in keys)} WHERE id=?", [cols[k] for k in keys] + [lid])
 
 
-def record(ticker: str, run_id: int, decision: str, price: float | None) -> list[dict]:
-    """Replace the ticker's conditions with those in this analysis. Returns the new conditions."""
-    now = _now()
+def record(ticker: str, run_id: int, decision: str, price: float | None, when: datetime | None = None) -> list[dict]:
+    """Replace the ticker's conditions with those in this analysis. Returns the new conditions.
+
+    `when` is when the analysis was made (defaults to now); the expiry counts from it."""
+    now = when or _now()
     with store._lock, store.connect() as c:
         c.execute("UPDATE levels SET status='used' WHERE ticker=? AND status='triggered'", (ticker,))
         c.execute("UPDATE levels SET status='replaced' WHERE ticker=? AND status='watching'", (ticker,))
@@ -235,3 +237,38 @@ def prioritise(items: list) -> list:
     """Watchlist items with a met condition first, then the rest in their existing order."""
     hot = set(triggered_tickers())
     return [i for i in items if i.symbol in hot] + [i for i in items if i.symbol not in hot]
+
+
+BACKFILL_DAYS = 7
+
+
+def backfill(ec, items: list, days: int = BACKFILL_DAYS) -> list[str]:
+    """Read conditions from each watchlist symbol's latest saved report (no new analysis).
+
+    Skips symbols that already have active conditions, reports older than `days`, failed runs and
+    Buy/Overweight reports (those acted at the time). Returns a line per symbol for the log."""
+    since = (_now() - timedelta(days=days)).isoformat(timespec="seconds")
+    out = []
+    for item in items:
+        if active(item.symbol):
+            continue
+        with store._lock, store.connect() as c:
+            r = c.execute("SELECT * FROM runs WHERE ticker=? AND decision IS NOT NULL AND decision != '' "
+                          "ORDER BY id DESC LIMIT 1", (item.symbol,)).fetchone()
+        if not r or (r["finished"] or r["started"] or "") < since:
+            continue
+        if str(r["rating"] or "").lower() in ("buy", "overweight"):
+            continue
+        try:
+            price = ec.find_instrument(item.symbol).get("rate")
+            price = float(price) if price else None
+        except Exception:  # noqa: BLE001
+            price = None
+        try:
+            when = datetime.fromisoformat(r["finished"] or r["started"])
+        except (TypeError, ValueError):
+            when = None
+        got = record(item.symbol, r["id"], r["decision"], price, when=when)
+        out.append(f"{item.symbol} (run #{r['id']}): " + ("; ".join(describe(g) for g in got) if got else "no numeric condition"))
+    store.log("info", "watch levels read from saved reports: " + (" | ".join(out) if out else "nothing to read"))
+    return out

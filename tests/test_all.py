@@ -159,6 +159,7 @@ def eng(tmp_path, monkeypatch):
     store.init()
     store.set_setting("live_limits_applied", "test")   # keep test defaults; the go-live change has its own test
     store.set_setting("watchlist_fix_applied", "test")
+    store.set_setting("levels_backfill_applied", "test")
     from app import levels
     monkeypatch.setattr(levels, "call_model", lambda prompt: '{"conditions": []}')
     sent = []
@@ -1420,3 +1421,22 @@ def test_watch_level_feeds_the_agents_and_is_used_up(eng, monkeypatch):
     engine.analyse(policy.parse_watchlist("META")[0])
     assert "Earlier condition met" in seen["rules"] and "closed 610" in seen["rules"]
     assert levels.active("META") == []                                # used up by the new analysis
+
+
+
+def test_watch_levels_backfill_from_saved_reports(eng, monkeypatch):
+    engine, store, sent, fs, rating = eng
+    from app import levels, policy
+    monkeypatch.setattr(levels, "call_model",
+                        lambda p: '{"conditions": [{"type": "zone", "low": 590, "high": 600}], "horizon_days": 30}'
+                        if "META report" in p else '{"conditions": []}')
+    r1 = store.start_run("META"); store.finish_run(r1, "Hold", "META report: wait for 590-600")
+    r2 = store.start_run("GOOG"); store.finish_run(r2, "Overweight", "GOOG report")        # acted at the time: skipped
+    r3 = store.start_run("MU"); store.finish_run(r3, None, None, error="boom")             # failed: skipped
+    out = levels.backfill(type("EC", (), {"find_instrument": lambda self, s: {"rate": 600.0}})(),
+                          policy.parse_watchlist("META,GOOG,MU,VRT"))
+    assert out == ["META (run #1): pull-back into 590–600"]
+    lv = levels.active("META")
+    assert len(lv) == 1 and lv[0]["run_id"] == r1
+    assert levels.backfill(type("EC", (), {"find_instrument": lambda self, s: {"rate": 600.0}})(),
+                           policy.parse_watchlist("META")) == []                          # already has one
