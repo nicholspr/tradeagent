@@ -129,3 +129,24 @@ def html(perf: dict, prev: dict | None) -> str:
             f"{head}{body}{total}</table>"
             "<p style='color:#888;font-size:12px'>Today = change since the previous day's close (or since purchase for "
             "anything bought today). Cost = what the open positions cost.</p>")
+
+
+# Totals from the 3 Nov 2026 daily summary email (sent before snapshots existed), so the 4 Nov summary can
+# compare with the previous day. Inserted once and never over an existing row.
+SEED = {"2026-11-03": {"total": 794.06, "cash": 367.40,
+                       "data": {"META": 150.14, "MU": 75.17, "VRT": 65.33, "BTC": 52.21, "GOOG": 49.44,
+                                "LLY": 24.89, "UPB": 9.48}}}
+
+
+def seed_once() -> None:
+    _ensure()
+    added = []
+    with store._lock, store.connect() as c:
+        for day, v in SEED.items():
+            data = json.dumps({k: {"value": x} for k, x in v["data"].items()})
+            cur = c.execute("INSERT OR IGNORE INTO snapshots(day, total, cash, data, taken) VALUES (?,?,?,?,?)",
+                            (day, v["total"], v["cash"], data, "seeded from the daily summary email"))
+            if cur.rowcount:
+                added.append(f"{day} (${v['total']:,.2f})")
+    if added:          # logged after the write is committed, so the log's own write is not blocked
+        store.log("info", "performance: saved totals from earlier summary emails: " + ", ".join(added))

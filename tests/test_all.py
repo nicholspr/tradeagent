@@ -1475,3 +1475,15 @@ def test_daily_performance_day_change_and_vs_cost(eng):
     assert "Holdings on the day: +$2.64" in txt and "Total vs 2026-11-03: +$5.00" in txt
     assert "META: $152.50 | today +$2.50 (+1.7%) | +$12.75 (+9.1%) vs cost $139.75" in txt
     assert "<table" in performance.html(perf, prev) and "#137333" in performance.html(perf, prev)
+
+
+def test_seeded_previous_day_is_used_for_comparison(eng):
+    engine, store, sent, fs, rating = eng
+    from app import performance
+    performance.seed_once()
+    performance.seed_once()                                             # idempotent
+    perf = {"rows": [], "total": 800.0, "cash": 419.58}
+    prev = performance.snapshot(perf, "2026-11-04")
+    assert prev["day"] == "2026-11-03" and prev["total"] == 794.06
+    assert "Total vs 2026-11-03: +$5.94" in "\n".join(performance.text({**perf, "invested_value": 380.42, "day": 0,
+                                                                       "day_pct": None, "pnl": None}, prev))

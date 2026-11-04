@@ -12,7 +12,7 @@ from apscheduler.triggers.cron import CronTrigger
 from fastapi import FastAPI, Form, HTTPException, Request
 from fastapi.responses import HTMLResponse, RedirectResponse
 
-from . import config, engine, markets, opportunities, policy, store
+from . import performance, config, engine, markets, opportunities, policy, store
 
 sched = BackgroundScheduler(timezone=config.TZ)
 
@@ -50,7 +50,7 @@ def schedule_jobs() -> None:
     sched.add_job(engine.process_queue, "interval", minutes=5, id="queue", replace_existing=True, max_instances=1)
     sched.add_job(refresh_markets, "interval", minutes=markets.REFRESH_MINUTES, id="markets",
                   replace_existing=True, max_instances=1)
-    sched.add_job(engine.daily_summary, CronTrigger(day_of_week="mon-fri", hour=21, minute=30),
+    sched.add_job(engine.daily_summary, CronTrigger(hour=21, minute=30),
                   id="summary", replace_existing=True)
     sched.add_job(engine.check_levels, CronTrigger(hour=6, minute=30), id="levels",
                   replace_existing=True, max_instances=1)
@@ -62,6 +62,7 @@ async def lifespan(_app):
     if not config.DRY_RUN:
         engine.apply_live_limits_once()
     engine.apply_watchlist_fix_once()
+    performance.seed_once()
     if config.SCHEDULER_ENABLED:
         engine.backfill_levels_once()
     engine.log_settings()
