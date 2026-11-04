@@ -66,6 +66,10 @@ def init() -> None:
             CREATE TABLE IF NOT EXISTS events (id INTEGER PRIMARY KEY AUTOINCREMENT, ts TEXT, level TEXT, msg TEXT);
             CREATE TABLE IF NOT EXISTS scans (
                 id INTEGER PRIMARY KEY AUTOINCREMENT, started TEXT, finished TEXT, items TEXT, error TEXT);
+            CREATE TABLE IF NOT EXISTS levels (
+                id INTEGER PRIMARY KEY AUTOINCREMENT, ticker TEXT, run_id INTEGER, kind TEXT,
+                low REAL, high REAL, invalid_below REAL, note TEXT, created TEXT, expires TEXT,
+                status TEXT, checked TEXT, last_close REAL, triggered TEXT, trigger_info TEXT);
             """
         )
         if "override" not in [r["name"] for r in c.execute("PRAGMA table_info(proposals)")]:

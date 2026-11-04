@@ -159,6 +159,8 @@ def eng(tmp_path, monkeypatch):
     store.init()
     store.set_setting("live_limits_applied", "test")   # keep test defaults; the go-live change has its own test
     store.set_setting("watchlist_fix_applied", "test")
+    from app import levels
+    monkeypatch.setattr(levels, "call_model", lambda prompt: '{"conditions": []}')
     sent = []
     monkeypatch.setattr(notify, "sms", lambda t: sent.append(("sms", t)) or True)
     monkeypatch.setattr(notify, "email", lambda s, b, html=None: sent.append(("email", s)) or True)
@@ -1357,3 +1359,64 @@ def test_daily_summary_lists_analyses_trades_outside_buys_and_queue(eng, monkeyp
     assert "Bought outside the app today" in body and "LLY: 1 position(s), about $25.00" in body
     assert "META: 1 position" not in body
     assert "Next share run: META, GOOG" in body            # never-analysed META first, then least recent
+
+
+
+def test_watch_levels_record_check_and_priority(eng, monkeypatch):
+    engine, store, sent, fs, rating = eng
+    from datetime import datetime, timezone
+    from app import levels, policy
+    reply = {"v": '{"conditions": [{"type": "close_above", "level": 11.015}, {"type": "zone", "low": 10.46, '
+                  '"high": 10.68}, {"type": "close_above", "level": 999}], "invalid_below": 10.17, "horizon_days": 60}'}
+    monkeypatch.setattr(levels, "call_model", lambda prompt: reply["v"])
+    got = levels.record("IUCS.L", 1, "report text", 10.95)
+    assert [(g["kind"], g["low"], g["high"]) for g in got] == [("close_above", 11.015, 11.015), ("zone", 10.46, 10.68)]
+    assert all(g["invalid_below"] == 10.17 for g in got)              # 999 dropped as implausible
+    act = levels.active("IUCS.L")
+    assert len(act) == 2 and act[0]["expires"][:10] > act[0]["created"][:10]
+
+    class EC:
+        bars = []
+        def find_instrument(self, s):
+            return {"instrumentId": 1037364}
+        def candles(self, iid, interval, n):
+            return self.bars
+    ec = EC()
+    now = datetime(2026, 11, 5, 6, 30, tzinfo=timezone.utc)
+    ec.bars = [{"date": "2026-11-04T00:00:00Z", "open": 10.9, "high": 11.0, "low": 10.85, "close": 10.98},
+               {"date": "2026-11-05T00:00:00Z", "open": 11.2, "high": 11.3, "low": 11.1, "close": 11.25}]  # today: ignored
+    ch = levels.check(ec, now)
+    assert ch["triggered"] == [] and levels.active("IUCS.L")[0]["last_close"] == 10.98
+    ec.bars[0].update(close=11.05)                                    # completed day closes above 11.015
+    ch = levels.check(ec, now)
+    assert [c[1]["kind"] for c in ch["triggered"]] == ["close_above"]
+    assert levels.triggered_tickers() == ["IUCS.L"]
+    note = levels.trigger_note("IUCS.L")
+    assert "Earlier condition met" in note and "closed 11.05 on 2026-11-04" in note
+    # a met level jumps the queue
+    items = policy.parse_watchlist("META,GOOG,IUCS.L")
+    assert [i.symbol for i in levels.prioritise(items)] == ["IUCS.L", "META", "GOOG"]
+    # a close below the invalidation cancels what is still watching
+    ec.bars[0].update(close=10.10, low=10.05)
+    ch = levels.check(ec, now)
+    assert len(ch["cancelled"]) == 2
+    assert levels.active("IUCS.L") == []
+    # a new analysis replaces earlier conditions
+    reply["v"] = '{"conditions": [{"type": "zone", "low": 10.5}]}'
+    levels.record("IUCS.L", 2, "t", 10.6)
+    assert [(lv["kind"], lv["low"], lv["high"], lv["invalid_below"]) for lv in levels.active("IUCS.L")] == [("zone", 10.5, 10.5, None)]
+
+
+def test_watch_level_feeds_the_agents_and_is_used_up(eng, monkeypatch):
+    engine, store, sent, fs, rating = eng
+    from app import levels, policy
+    monkeypatch.setattr(levels, "call_model", lambda p: '{"conditions": [{"type": "close_above", "level": 605}]}')
+    levels.record("META", 1, "t", 600)
+    lv = levels.active("META")[0]
+    levels._set(lv["id"], status="triggered", trigger_info="closed 610 on 2026-11-04")
+    seen = {}
+    monkeypatch.setattr(engine.analyst, "analyze", lambda t, a, p, rules="": seen.update(rules=rules) or ("Hold", "x"))
+    monkeypatch.setattr(levels, "call_model", lambda p: '{"conditions": []}')
+    engine.analyse(policy.parse_watchlist("META")[0])
+    assert "Earlier condition met" in seen["rules"] and "closed 610" in seen["rules"]
+    assert levels.active("META") == []                                # used up by the new analysis

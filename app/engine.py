@@ -5,7 +5,7 @@ import threading
 from datetime import datetime, timedelta, timezone
 from zoneinfo import ZoneInfo
 
-from . import analyst, config, notify, policy, store
+from . import analyst, config, levels, notify, policy, store
 from .etoro import EtoroClient, EtoroError
 
 _run_lock = threading.Lock()          # one analysis at a time (LLM cost + rate limits)
@@ -111,6 +111,13 @@ def analyse(item: policy.WatchItem, *, manual: bool = False) -> dict:
         _run_lock.release()
 
 
+def _float(v) -> float | None:
+    try:
+        return float(v)
+    except (TypeError, ValueError):
+        return None
+
+
 def _check_asset_match(item: policy.WatchItem, inst: dict) -> None:
     """Refuse when the eToro symbol is a different kind of asset from the one being researched.
 
@@ -135,8 +142,12 @@ def _analyse(item: policy.WatchItem, *, manual: bool) -> dict:
         _check_asset_match(item, inst)
         book = ec.book()
         store.log("info", f"analysing {item.symbol} ({item.yf}, {item.asset_type}) with quick={config.model_for('quick')} deep={config.model_for('deep')}")
-        rating, decision = analyst.analyze(item.yf, item.asset_type, _portfolio_context(book),
-                                            rules=policy.account_rules(s))
+        rules = policy.account_rules(s)
+        note = levels.trigger_note(item.symbol)
+        if note:
+            rules += "\n\n" + note
+            store.log("info", f"{item.symbol}: analysing because an earlier watch level was met")
+        rating, decision = analyst.analyze(item.yf, item.asset_type, _portfolio_context(book), rules=rules)
         store.finish_run(run_id, rating, decision)
     except Exception as e:  # noqa: BLE001
         store.finish_run(run_id, None, None, error=str(e)[:1000])
@@ -144,6 +155,13 @@ def _analyse(item: policy.WatchItem, *, manual: bool) -> dict:
         notify.email(f"Analysis failed: {item.symbol}", f"{e}")
         return {"error": str(e)}
 
+    if str(rating).lower() not in ("buy", "overweight"):
+        try:
+            levels.record(item.symbol, run_id, decision, _float(inst.get("rate")))
+        except Exception as e:  # noqa: BLE001
+            store.log("warn", f"watch levels for {item.symbol} not saved: {e}")
+    else:
+        levels.record_none(item.symbol)
     h = book.holdings.get(inst["instrumentId"])
     hv, hpos, hpend = (h.value_usd, h.positions, h.pending_usd) if h else (0.0, [], 0.0)
     prop = policy.propose(rating, holding_value=hv, holding_positions=hpos, pending_usd=hpend,
@@ -461,6 +479,7 @@ def scheduled_analysis(asset: str = "stock") -> None:
                           f"({done} of {limit} used today, manual runs included)")
         return
     items.sort(key=lambda i: store.last_run_for(i.symbol) or "")   # least recently analysed first
+    items = levels.prioritise(items)                                # ...but a met watch level goes first
     chosen = items[:limit - done]
     store.log("info", f"scheduled {asset} run started: {', '.join(i.symbol for i in chosen)} "
                       f"({done} of {limit} analyses used today)")
@@ -502,7 +521,15 @@ def next_in_queue() -> list[str]:
     crypto = len(items) - len(shares)
     slots = max(0, int(float(s["analyses_per_day"] or 0)) - crypto)
     shares.sort(key=lambda i: store.last_run_for(i.symbol) or "")
+    shares = levels.prioritise(shares)
     return [i.symbol for i in shares[:slots]]
+
+
+def check_levels() -> None:
+    try:
+        levels.overnight(client())
+    except Exception as e:  # noqa: BLE001
+        store.log("error", f"watch levels check failed: {e}")
 
 
 def daily_summary() -> None:
@@ -559,6 +586,10 @@ def daily_summary() -> None:
         if outside:
             lines += ["", "Bought outside the app today (eToro app or website):", *outside]
 
+    watching = levels.active()
+    if watching:
+        lines += ["", "Watch levels:"] + [f"  {lv['ticker']}: {levels.describe(lv)} [{'MET' if lv['status'] == 'triggered' else 'watching'}]"
+                                          for lv in watching]
     queue = next_in_queue()
     lines += ["", "Next share run: " + (", ".join(queue) if queue else "nothing scheduled (no share slots left after crypto)"),
               "", f"Mode: {s['mode']}  Kill switch: {s['kill_switch']}"]

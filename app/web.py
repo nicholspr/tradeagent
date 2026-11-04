@@ -52,6 +52,8 @@ def schedule_jobs() -> None:
                   replace_existing=True, max_instances=1)
     sched.add_job(engine.daily_summary, CronTrigger(day_of_week="mon-fri", hour=21, minute=30),
                   id="summary", replace_existing=True)
+    sched.add_job(engine.check_levels, CronTrigger(hour=6, minute=30), id="levels",
+                  replace_existing=True, max_instances=1)
 
 
 @asynccontextmanager
@@ -523,12 +525,34 @@ def dashboard():
     body = ("<div class=layout>"
             + card("Portfolio", port, "c12", right=live_clock())
             + card("Watchlist", markets_card(s), "c12", f"<span class=muted>{len(policy.parse_watchlist(s['watchlist']))} markets</span>")
+            + card("Watch levels", levels_card(), "c12",
+                   "<span class=muted>checked each morning at 06:30 against the previous day's close</span>")
             + card("Waiting for you", table(prow), "c6",
                    f"<span class='pill {'warn' if pend else ''}'>{len(pend)}</span>")
             + card("Run an analysis now", run_card, "c3" if config.DRY_RUN else "c6")
             + test_card
             + "</div><p class=muted>Research tool output is not financial advice. Limits are enforced by code, not by the AI.</p>")
     return page("Overview", body, refresh=30 if running else refresh, active="Overview")
+
+
+def levels_card() -> str:
+    from . import levels
+    rows = levels.active()
+    if not rows:
+        return ("<p class=muted>None yet. When an analysis says to wait for a price (a breakout above a level, or a "
+                "pull-back into a zone) the condition appears here and is checked every morning.</p>")
+    body = ""
+    for lv in rows:
+        status = ("<span class='pill okp'>Met</span>" if lv["status"] == "triggered" else "<span class=pill>Watching</span>")
+        last = f"{lv['last_close']:,.6g}" if lv.get("last_close") else "not checked yet"
+        info = f"<br><span class=muted>{esc(lv['trigger_info'] or '')}</span>" if lv["status"] == "triggered" else ""
+        body += (f"<tr><td><b>{esc(lv['ticker'])}</b></td><td>{esc(levels.describe(lv))}{info}</td><td>{status}</td>"
+                 f"<td>{last}</td><td>{lv['expires'][:10]}</td>"
+                 f"<td><a href='{B}/run/{lv['run_id']}'>#{lv['run_id']}</a></td></tr>")
+    return table(body, "<tr><th>Symbol</th><th>Buy condition</th><th>Status</th><th>Last close</th><th>Expires</th>"
+                       "<th>From run</th></tr>") + (
+        "<p class=muted>A met condition moves the share to the front of the next scheduled analysis. "
+        "The new analysis decides whether to trade; nothing is bought from a condition alone.</p>")
 
 
 @app.post("/watchlist/refresh")
