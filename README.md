@@ -212,7 +212,7 @@ The top menu has **Overview, Opportunities, Scorecard, Logs and Settings**. The 
 - **Reject** a pending proposal.
 
 ### Opportunities
-- **The scan:** Claude, using the Opportunities model and live web search (up to 8 searches), proposes 5 ideas to buy and hold for the **medium term (about 1–6 months)**. Each comes with a sector, thesis, catalyst, risks, horizon and sources.
+- **The scan:** Claude, using the Opportunities model and live web search (up to 8 searches), proposes 5 ideas to buy and hold. Before each scan you choose a **holding period**: **Short term** (days to a few weeks, tied to a dated event or a breakout, and only where the expected move clearly beats the spread) or **Medium term** (about 1–6 months). Each comes with a sector, thesis, catalyst, risks, horizon and sources.
 - **What the prompt is told:**
   - that this is a **UK account**, so no US-listed ETFs (they are CFD-only here); funds are London UCITS `.L` symbols instead;
   - buys only and unleveraged;
@@ -333,7 +333,7 @@ Removing an entry does not sell it; holdings stay until sold. London (`.L`) inst
 
 ```bash
 pip install -r requirements.txt
-python -m pytest -q tests          # 62 tests, all offline (fakes for eToro, Claude, email)
+python -m pytest -q tests          # 63 tests, all offline (fakes for eToro, Claude, email)
 DATA_DIR=./data uvicorn app.web:app --reload
 ```
 

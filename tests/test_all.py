@@ -447,7 +447,7 @@ def test_opportunity_scan_page_and_watchlist(eng, monkeypatch):
          "thesis": f"<b>{s}</b> thesis", "catalyst": "cat", "risks": "risk", "horizon": "weeks",
          "sources": [{"title": "Src", "url": f"https://news.example/{s}"}]} for s in ["AAA", "BBB", "SOL", "CCC", "DDD", "EEE"]]}
     urls = {f"https://news.example/{s}" for s in ["AAA", "BBB", "SOL", "CCC", "DDD", "EEE"]}
-    monkeypatch.setattr(op, "call_model", lambda prompt: ("```" + json.dumps(ideas) + "```", urls))
+    monkeypatch.setattr(op, "call_model", lambda prompt, system=None: ("```" + json.dumps(ideas) + "```", urls))
 
     class EC:
         def find_instrument(self, sym):
@@ -486,7 +486,7 @@ def test_failed_scan_is_recorded_and_not_blocking(eng, monkeypatch):
     from app import opportunities as op
     importlib.reload(op)
     monkeypatch.setenv("ANTHROPIC_API_KEY", "x")
-    monkeypatch.setattr(op, "call_model", lambda p: ("not json", set()))
+    monkeypatch.setattr(op, "call_model", lambda p, system=None: ("not json", set()))
     assert "error" in op.scan()
     last = store.latest_scan()
     assert last["finished"] and "parsable" in last["error"]
@@ -1607,10 +1607,23 @@ def test_opportunity_prompt_has_account_context_and_medium_horizon(eng):
     book = Book(cash_usd=419.58, total_usd=800.0, holdings={
         1: Holding(1, "META", units=0.12, value_usd=80.0), 2: Holding(2, "MU", units=0.08, value_usd=64.0)})
     p = opportunities.build_prompt(s, book, today="2026-11-06")
-    assert "medium term (about 1-6 months)" in p and "next days to weeks" not in p
+    assert "the medium term, about 1-6 months" in p and "a few days to four weeks" not in p
     assert "UK eToro account" in p and "do NOT suggest them" in p and "IUHC.L" in p
     assert "at most $75" in p and "25% of the portfolio" in p and "$420 cash" in p
     assert "META 10%, MU 8%" in p and "Already on the watchlist: META, IUHC.L, BTC" in p
     assert "At least 2 of the 5" in p and "outside technology and semiconductors" in p
     assert "Buys only, unleveraged" in p and '"sector"' in p
     assert "{" not in opportunities.build_prompt(s, None, today="x").split("Return ONLY")[0]   # all placeholders filled
+
+
+
+def test_opportunity_short_horizon_prompt(eng):
+    engine, store, sent, fs, rating = eng
+    from app import opportunities
+    s = store.get_settings()
+    p = opportunities.build_prompt(s, None, today="2026-11-06", horizon="short")
+    assert "the short term, roughly a few days to four weeks" in p and "spread on the way in and out" in p
+    assert "e.g. 1-2 weeks, 2-4 weeks" in p and "UK eToro account" in p and "Buys only" in p
+    assert "within days to a few weeks" in opportunities.system_for("short")
+    assert "over months rather than days" in opportunities.system_for("medium")
+    assert opportunities.build_prompt(s, None, today="x", horizon="bogus") == opportunities.build_prompt(s, None, today="x")

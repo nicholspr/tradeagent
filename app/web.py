@@ -993,7 +993,10 @@ def opportunities_page():
         dis = " disabled" if block else ""
         ctl = (f"<form method=post action='{B}/opportunities/scan' "
                f"onsubmit=\"return confirm('Run a new scan? It uses Claude with web search (roughly $0.20-$1).')\">"
-               f"<button{dis}>Find new opportunities</button></form>"
+               f"<div class=row><div class=grow style='max-width:280px'><label>Holding period</label>"
+               f"<select name=horizon>" + "".join(f"<option value={k}>{esc(v['label'])}</option>"
+                                                for k, v in opportunities.HORIZONS.items()) + "</select></div>"
+               f"<button{dis}>Find new opportunities</button></div></form>"
                + (f"<p class=muted>Unavailable: {esc(block)}.</p>" if block else ""))
     msg = ""
     if last and last["finished"] and last["error"]:
@@ -1012,12 +1015,12 @@ def opportunities_page():
 
 
 @app.post("/opportunities/scan")
-def opportunities_scan():
+def opportunities_scan(horizon: str = Form("medium")):
     block = opportunities.can_scan()
     if block:
         store.log("warn", f"opportunity scan not started: {block}")
         return back("/opportunities")
-    threading.Thread(target=opportunities.scan, daemon=True).start()
+    threading.Thread(target=opportunities.scan, kwargs={"horizon": horizon}, daemon=True).start()
     return back("/opportunities")
 
 

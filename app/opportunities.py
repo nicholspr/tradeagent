@@ -18,15 +18,16 @@ MAX_SEARCHES = 8
 SYSTEM = (
     "You are a research assistant for a UK-based retail investor who buys and holds unleveraged positions on eToro "
     "(shares, UCITS funds and major crypto; no shorting, no leverage, no CFDs). Use web search to find current, "
-    "well-sourced opportunities to hold for the medium term, roughly one to six months, from reputable sources such as "
+    "well-sourced opportunities to hold for {horizon_long}, from reputable sources such as "
     "company filings and press releases, Reuters, Bloomberg, CNBC, FT, MarketWatch, Seeking Alpha, Yahoo Finance, "
     "eToro's own market news and popular-investor commentary, central-bank and economic-data releases. Prefer ideas "
-    "with a concrete catalyst and a thesis that can play out over months rather than days. Never invent facts, "
+    "with a concrete catalyst and a thesis that can play out {horizon_fit}. Never invent facts, "
     "prices or URLs: only use what the search results show. This is research, not advice."
 )
 
 PROMPT = """Today is {today}.
-Find exactly {n} different potential opportunities to buy on eToro and hold for the medium term (about 1-6 months).
+Find exactly {n} different potential opportunities to buy on eToro and hold for {horizon_long}.
+{horizon_note}
 
 About this investor's account:
 - UK eToro account. US-listed ETFs (e.g. XLV, GLD, SPY) can only be bought as CFDs here, so do NOT suggest them.
@@ -47,18 +48,39 @@ Return ONLY a JSON object, no prose before or after, in this shape:
   "name": "company or asset name",
   "asset_type": "stock | etf | crypto",
   "sector": "e.g. technology, healthcare, energy, broad market, crypto",
-  "thesis": "2-3 sentences: why this could work over the next few months",
+  "thesis": "2-3 sentences: why this could work over {horizon_short}",
   "catalyst": "the specific recent or upcoming event or data point",
   "risks": "main risks, one or two sentences",
-  "horizon": "e.g. 1-3 months, 3-6 months",
+  "horizon": "{horizon_eg}",
   "sources": [{{"title": "page title", "url": "https://..."}}]
 }}]}}
 Every opportunity needs at least one source URL that appeared in your search results."""
 
 DIVERSE = 2
 
+HORIZONS = {
+    "short": {"label": "Short term (days to a few weeks)",
+              "horizon_long": "the short term, roughly a few days to four weeks",
+              "horizon_short": "the next few days to weeks",
+              "horizon_fit": "within days to a few weeks, such as an earnings release, product launch, data release, "
+                             "index change or a strong price breakout with rising volume",
+              "horizon_eg": "e.g. 1-2 weeks, 2-4 weeks",
+              "horizon_note": "Each buy pays the eToro spread on the way in and out, so only suggest ideas where the "
+                              "expected move is clearly larger than a typical spread. Name the date or event to watch."},
+    "medium": {"label": "Medium term (1-6 months)",
+               "horizon_long": "the medium term, about 1-6 months",
+               "horizon_short": "the next few months",
+               "horizon_fit": "over months rather than days",
+               "horizon_eg": "e.g. 1-3 months, 3-6 months",
+               "horizon_note": ""},
+}
 
-def build_prompt(s: dict, book=None, today: str | None = None) -> str:
+
+def system_for(horizon: str = "medium") -> str:
+    return SYSTEM.format(**{k: v for k, v in HORIZONS.get(horizon, HORIZONS["medium"]).items() if k != "label"})
+
+
+def build_prompt(s: dict, book=None, today: str | None = None, horizon: str = "medium") -> str:
     """The scan prompt with this account's rules, holdings and watchlist filled in."""
     from . import policy
     watch = [i.symbol for i in policy.parse_watchlist(s.get("watchlist") or "")]
@@ -76,7 +98,8 @@ def build_prompt(s: dict, book=None, today: str | None = None) -> str:
             return float(s.get(k) or d)
         except ValueError:
             return d
-    return PROMPT.format(today=today or datetime.now(timezone.utc).date().isoformat(), n=COUNT, diverse=DIVERSE,
+    h = {k: v for k, v in HORIZONS.get(horizon, HORIZONS["medium"]).items() if k != "label"}
+    return PROMPT.format(**h, today=today or datetime.now(timezone.utc).date().isoformat(), n=COUNT, diverse=DIVERSE,
                          trade=f("max_trade_usd", 25), cap=f("max_position_pct", 25),
                          cash=cash if cash is not None else 0, holdings=holdings, watching=watching)
 
@@ -86,10 +109,10 @@ def _client():
     return anthropic.Anthropic(timeout=300.0)
 
 
-def call_model(prompt: str) -> tuple[str, set[str]]:
+def call_model(prompt: str, system: str | None = None) -> tuple[str, set[str]]:
     """Ask Claude (with web search). Returns (final text, set of URLs the searches actually returned)."""
     resp = _client().messages.create(
-        model=config.model_for("opp"), max_tokens=6000, system=SYSTEM,
+        model=config.model_for("opp"), max_tokens=6000, system=system or system_for("medium"),
         tools=[{"type": "web_search_20250305", "name": "web_search", "max_uses": MAX_SEARCHES}],
         messages=[{"role": "user", "content": prompt}])
     text, urls = [], set()
@@ -197,15 +220,16 @@ def can_scan() -> str | None:
     return None
 
 
-def scan() -> dict:
+def scan(horizon: str = "medium") -> dict:
+    horizon = horizon if horizon in HORIZONS else "medium"
     sid = store.start_scan()
-    store.log("info", f"opportunity scan #{sid} started")
+    store.log("info", f"opportunity scan #{sid} started ({HORIZONS[horizon]['label'].lower()})")
     try:
         try:
             book = engine.client().book()
         except Exception:  # noqa: BLE001
             book = None
-        text, urls = call_model(build_prompt(store.get_settings(), book))
+        text, urls = call_model(build_prompt(store.get_settings(), book, horizon=horizon), system_for(horizon))
         items = verify_on_etoro(clean(parse(text), urls))
         if not items:
             raise ValueError("no usable opportunities with verifiable sources were returned")
