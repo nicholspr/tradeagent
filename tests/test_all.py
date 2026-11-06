@@ -1162,7 +1162,7 @@ def test_settings_sections_and_inline_validation(eng, monkeypatch):
                          "cash_buffer_usd", "analyses_per_day"}
     with TestClient(web.app) as c:
         page = c.get("/settings").text
-        for title in ("Watchlist and schedule", "Trading limits", "Approvals and sells"):
+        for title in ("Schedule", "Trading limits", "Approvals and sells", "Watchlist"):
             assert title in page
         assert "% of portfolio" in page and "Cost control" in page
         r = c.post("/settings", data={**good, "max_trade_usd": "abc", "schedule_time": "99:00", "analyses_per_day": "5"})
@@ -1547,3 +1547,53 @@ def test_scorecard_page_renders(eng, monkeypatch):
         r = c.get("/scorecard")
         assert r.status_code == 200 and "Does it work?" in r.text and "Not enough history yet" in r.text
         assert "/scorecard" in c.get("/").text                           # in the top menu
+
+
+def test_watchlist_editor_add_checks_etoro_and_delete(eng, monkeypatch):
+    engine, store, sent, fs, rating = eng
+    from fastapi.testclient import TestClient
+    from app import web, markets
+    from app.etoro import EtoroError
+    monkeypatch.setattr(web.sched, "start", lambda: None)
+    known = {"NVDA": {"instrumentId": 1137, "name": "NVIDIA", "assetClass": "Stocks", "buyEnabled": True},
+             "ETH": {"instrumentId": 100001, "name": "Ethereum", "assetClass": "Crypto", "buyEnabled": True},
+             "CVX.US": {"instrumentId": 1014, "name": "Chevron", "assetClass": "Stocks", "buyEnabled": True},
+             "XLV": {"instrumentId": 3017, "name": "Health Care SPDR", "assetClass": "ETF", "buyEnabled": True},
+             "IUHC.L": {"instrumentId": 1036574, "name": "iShares Health Care", "assetClass": "ETF", "buyEnabled": True}}
+
+    class EC:
+        def find_instrument(self, s):
+            if s not in known:
+                raise EtoroError(f"instrument {s!r} not found on eToro")
+            return known[s]
+    monkeypatch.setattr(engine, "client", lambda: EC())
+    monkeypatch.setattr(markets, "watchlist_rows", lambda ec, syms: [{"symbol": x, "name": x + " name", "price": 10.0,
+                                                                     "change_pct": 1.5, "asset_class": "Stocks"} for x in syms])
+    monkeypatch.setattr(markets, "portfolio_snapshot", lambda ec: {"book": type("B", (), {"holdings": {}})()})
+    store.set_setting("watchlist", "META,BTC=BTC-USD@crypto")
+    with TestClient(web.app) as c:
+        page = c.get("/settings").text
+        assert "META name" in page and "researched as BTC-USD" in page and "$10.00" in page and "Delete" in page
+        assert "<textarea name=watchlist" not in page                      # no longer free text
+        r = c.post("/watchlist/add", data={"symbol": "nvda"}, follow_redirects=False)
+        assert r.status_code == 303 and "Added%20NVDA" in r.headers["location"]
+        r = c.post("/watchlist/add", data={"symbol": "ETH"}, follow_redirects=False)
+        r = c.post("/watchlist/add", data={"symbol": "CVX.US"}, follow_redirects=False)
+        r = c.post("/watchlist/add", data={"symbol": "IUHC.L"}, follow_redirects=False)  # London ETF: fine
+        assert store.get_settings()["watchlist"] == "META,BTC=BTC-USD@crypto,NVDA,ETH=ETH-USD@crypto,CVX.US=CVX,IUHC.L"
+        r = c.post("/watchlist/add", data={"symbol": "NOPE"})
+        assert r.status_code == 400 and "not found on eToro, so it was not added" in r.text
+        r = c.post("/watchlist/add", data={"symbol": "META"})
+        assert r.status_code == 400 and "already on the watchlist" in r.text
+        r = c.post("/watchlist/add", data={"symbol": "XLV"})
+        assert r.status_code == 400 and "CFD" in r.text and "Add anyway" in r.text
+        assert "XLV" not in store.get_settings()["watchlist"]
+        c.post("/watchlist/add", data={"symbol": "XLV", "force": "1"})
+        assert store.get_settings()["watchlist"].endswith(",XLV")
+        r = c.post("/watchlist/remove", data={"symbol": "btc"}, follow_redirects=False)
+        assert r.status_code == 303 and "BTC" not in store.get_settings()["watchlist"]
+        # saving other settings leaves the watchlist alone
+        good = {k: store.get_settings()[k] for k in [*web.NUMERIC, *web.TIME_FIELDS]}
+        before = store.get_settings()["watchlist"]
+        assert c.post("/settings", data=good, follow_redirects=False).status_code == 303
+        assert store.get_settings()["watchlist"] == before

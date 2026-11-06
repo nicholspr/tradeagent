@@ -79,11 +79,28 @@ Change these on the **Settings** page, in the Control card.
 
 All of these are on the **Settings** page and take effect immediately; schedule changes reschedule the jobs. Each save is written to the log.
 
-### Watchlist and schedule
+### Watchlist (its own card on the Settings page)
+
+The watchlist is a table with one row per symbol, showing:
+- the eToro symbol, and the research ticker if it differs;
+- a "held" tag if you own it;
+- the full instrument name and type (shares, ETF or crypto);
+- the latest price with its 1-day change;
+- a **Delete** button. It asks for confirmation, and warns you if you hold the instrument, because removing it does **not** sell it.
+
+**Adding a symbol:** type it into the box at the bottom (with an optional research ticker if Yahoo uses a different one) and press **Check on eToro and add**. The symbol is looked up on eToro first and is only added if it exists there.
+- **Crypto** is detected automatically and researched as `SYMBOL-USD`.
+- **eToro `.US` symbols** are researched without the suffix (`CVX.US` → `CVX`).
+- **US-listed ETFs** are held back with a warning, because on a UK account they are usually CFD-only. Tick **Add anyway** to override.
+- **Instruments eToro has disabled for buying** are held back the same way.
+- **Unknown symbols and duplicates** are refused with a message.
+
+Every add and delete is logged. The other settings below are saved separately and never change the watchlist.
+
+### Schedule
 
 | Setting | Current | Code default | What it does |
 | --- | --- | --- | --- |
-| Watchlist | 16 entries | `META,GOOG,MU,UPB,VRT,BTC=BTC-USD@crypto` | The only instruments the agents research and the only ones the app can buy. See [Watchlist format](#9-watchlist-format-and-etoro-symbols). |
 | Analyses per day | 5 | 2 | Total analyses per day, **manual runs included**. This is the main cost control. Crypto entries are analysed at the crypto time, and the remaining slots go to shares. |
 | Share run time | 15:05 | 15:05 | UK time, weekdays. Just after the US open (14:30 UK); London is open until 16:30. |
 | Crypto run time | 09:05 | 09:05 | UK time, every day, for `@crypto` entries. |
@@ -308,7 +325,7 @@ Removing an entry does not sell it; holdings stay until sold. London (`.L`) inst
 
 ```bash
 pip install -r requirements.txt
-python -m pytest -q tests          # 60 tests, all offline (fakes for eToro, Claude, email)
+python -m pytest -q tests          # 61 tests, all offline (fakes for eToro, Claude, email)
 DATA_DIR=./data uvicorn app.web:app --reload
 ```
 

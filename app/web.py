@@ -2,7 +2,7 @@
 import html
 import hmac
 import threading
-from urllib.parse import urlparse
+from urllib.parse import urlparse, quote
 from contextlib import asynccontextmanager
 from datetime import datetime, timedelta, timezone
 from zoneinfo import ZoneInfo
@@ -654,7 +654,7 @@ def logs_page():
 
 
 SETTING_SECTIONS = [
-    ("Watchlist and schedule", [
+    ("Schedule", [
         ("analyses_per_day", "Analyses per day", "shares", "Cost control: each analysis costs roughly $0.15–$3 in Claude usage, depending on the AI models below."),
         ("schedule_time", "Share run time", "UK time, HH:MM", "Weekdays. 15:05 is just after the US market opens."),
         ("crypto_time", "Crypto run time", "UK time, HH:MM", "Daily, for @crypto entries."),
@@ -712,7 +712,8 @@ def validate_settings(vals: dict) -> dict:
     return errors
 
 
-def settings_page(s: dict | None = None, errors: dict | None = None, status: int = 200) -> HTMLResponse:
+def settings_page(s: dict | None = None, errors: dict | None = None, status: int = 200,
+                  msg: str = "", wl_error: str = "", wl_form: dict | None = None) -> HTMLResponse:
     stored = store.get_settings()
     s = {**stored, **(s or {})}
     errors = errors or {}
@@ -736,11 +737,6 @@ def settings_page(s: dict | None = None, errors: dict | None = None, status: int
                           f"<option {'selected' if s[k] != 'on' else ''}>off</option></select>"
                           f"<div class=help>{esc(help_)}</div></div>")
         sections += f"<h3>{esc(title)}</h3>"
-        if title == "Watchlist and schedule":
-            sections += (f"<label>Watchlist <span class=unit>eToro symbol[=research ticker][@crypto], comma-separated</span></label>"
-                         f"<textarea name=watchlist rows=2{bad('watchlist')}>{esc(s['watchlist'])}</textarea>{err('watchlist')}"
-                         f"<div class=help>Only these shares are researched, and only these can be bought.</div>"
-                         f"<div style='height:12px'></div>")
         sections += f"<div class=fields>{inner}</div>"
     models = "".join(
         f"<div><label>{esc(label)}</label><select name={k}{bad(k)}>"
@@ -758,6 +754,9 @@ def settings_page(s: dict | None = None, errors: dict | None = None, status: int
             f"<textarea name=user_key rows=4 autocomplete=off placeholder='paste the long private key; leave blank to keep'></textarea>"
             f"<p><button>Save keys</button></p><p class=muted>Stored on your server only; never shown again.</p></form>")
     body = ("<div class=layout>" + card("Control", control_card(s), "c12")
+            + card("Watchlist", watchlist_editor(stored, msg, wl_error, wl_form or {}), "c12",
+                   f"<span class=muted>{len(policy.parse_watchlist(stored['watchlist']))} symbols · only these are "
+                   f"researched, and only these can be bought</span>")
             + card("Limits and schedule", limits, "c8") + card("eToro connection", keys, "c4") + "</div>")
     resp = page("Settings", body, active="Settings")
     resp.status_code = status
@@ -765,8 +764,118 @@ def settings_page(s: dict | None = None, errors: dict | None = None, status: int
 
 
 @app.get("/settings", response_class=HTMLResponse)
-def settings_get():
-    return settings_page()
+def settings_get(msg: str = ""):
+    return settings_page(msg=msg[:300])
+
+
+def watchlist_editor(s: dict, msg: str = "", error: str = "", form: dict | None = None) -> str:
+    """Watchlist as a table (symbol, name, type, latest price, delete) plus an add form that checks eToro first."""
+    form = form or {}
+    items = policy.parse_watchlist(s["watchlist"])
+    try:
+        quotes = {r["symbol"]: r for r in markets.watchlist_rows(engine.client(), [i.symbol for i in items])} if items else {}
+    except Exception as e:  # noqa: BLE001
+        quotes, error = {}, error or f"Prices unavailable: {e}"
+    held = set()
+    try:
+        held = {h.symbol for h in markets.portfolio_snapshot(engine.client())["book"].holdings.values() if h.units > 0}
+    except Exception:  # noqa: BLE001
+        pass
+    rows = ""
+    for i in items:
+        q = quotes.get(i.symbol) or {}
+        research = f"<br><span class=muted>researched as {esc(i.yf)}</span>" if i.yf != i.symbol else ""
+        kind = "<span class=pill>crypto</span>" if i.asset_type == "crypto" else esc(q.get("asset_class") or "")
+        if q.get("error"):
+            price = f"<span class=muted>{esc(q['error'][:60])}</span>"
+        elif q.get("price"):
+            chg = q.get("change_pct")
+            price = f"${float(q['price']):,.2f}" + (
+                f" <span style='color:{'#4ade80' if chg >= 0 else '#f87171'}'>{chg:+.1f}%</span>" if chg is not None else "")
+        else:
+            price = "<span class=muted>—</span>"
+        own = " <span class='pill okp'>held</span>" if i.symbol in held else ""
+        warn = ("This only stops the agent researching and buying it. It does not sell your holding."
+                if i.symbol in held else "Remove from the watchlist?")
+        rows += (f"<tr><td><b>{esc(i.symbol)}</b>{own}{research}</td><td>{esc(q.get('name') or '')}</td><td>{kind}</td>"
+                 f"<td>{price}</td><td><form method=post action='{B}/watchlist/remove' "
+                 f"onsubmit=\"return confirm('{esc(i.symbol)}: {esc(warn)}')\">"
+                 f"<input type=hidden name=symbol value='{esc(i.symbol)}'><button class=sec>Delete</button></form></td></tr>")
+    tbl = table(rows or "<tr><td class=muted>The watchlist is empty.</td></tr>",
+                "<tr><th>Symbol</th><th>Name</th><th>Type</th><th>Latest price</th><th></th></tr>")
+    flash = f"<div class='banner warn' style='border-radius:8px;margin-bottom:12px'>{esc(error)}</div>" if error else ""
+    if msg and not error:
+        flash = f"<div class=banner style='border-radius:8px;margin-bottom:12px;background:#12321f;color:#86efac'>{esc(msg)}</div>"
+    force = (f"<label style='margin-top:8px'><input type=checkbox name=force value=1 style='width:auto;min-height:0'> "
+             f"Add anyway</label>") if form.get("can_force") else ""
+    add = (f"<form method=post action='{B}/watchlist/add' class=row style='margin-top:14px'>"
+           f"<div class=grow><label>eToro symbol</label><input name=symbol value='{esc(form.get('symbol', ''))}' "
+           f"placeholder='e.g. NVDA, IUHC.L, ETH' required></div>"
+           f"<div class=grow><label>Research ticker <span class=unit>optional, if Yahoo uses a different one</span></label>"
+           f"<input name=research value='{esc(form.get('research', ''))}' placeholder='e.g. CVX for CVX.US'></div>"
+           f"<button>Check on eToro and add</button>{force}</form>"
+           "<p class=muted>The symbol is looked up on eToro before it is added. Crypto is detected automatically and "
+           "researched as SYMBOL-USD. US-listed funds (ETFs) are flagged, because on a UK account they can only be "
+           "bought as CFDs; use a London-listed UCITS fund instead (e.g. IUHC.L, IGLN.L).</p>")
+    return flash + tbl + add
+
+
+def _entry_for(symbol: str, research: str, inst: dict) -> str:
+    cls = str(inst.get("assetClass") or "").lower()
+    if cls == "crypto":
+        return f"{symbol}={research or symbol + '-USD'}@crypto"
+    if not research and symbol.endswith(".US"):
+        research = symbol[:-3]                                # eToro CVX.US -> Yahoo CVX
+    return f"{symbol}={research}" if research and research != symbol else symbol
+
+
+@app.post("/watchlist/add", response_class=HTMLResponse)
+def watchlist_add(symbol: str = Form(...), research: str = Form(""), force: str = Form("")):
+    sym, research = symbol.strip().upper(), research.strip().upper()
+    form = {"symbol": sym, "research": research}
+    cur = store.get_settings()["watchlist"]
+    if not sym or any(c in sym for c in ",=@ "):
+        return settings_page(wl_error="Enter one eToro symbol, e.g. NVDA or IUHC.L.", wl_form=form, status=400)
+    if sym in {i.symbol for i in policy.parse_watchlist(cur)}:
+        return settings_page(wl_error=f"{sym} is already on the watchlist.", wl_form=form, status=400)
+    try:
+        inst = engine.client().find_instrument(sym)
+    except Exception as e:  # noqa: BLE001
+        hint = " For US shares eToro sometimes adds .US (e.g. CVX.US for Chevron)." if "." not in sym else ""
+        return settings_page(wl_error=f"{sym} was not found on eToro, so it was not added ({str(e)[:120]}).{hint}",
+                             wl_form=form, status=400)
+    name, cls = inst.get("name") or sym, str(inst.get("assetClass") or "")
+    if not force:
+        warn = ""
+        if "etf" in cls.lower() and not sym.endswith(".L"):
+            warn = (f"{sym} ({name}) is a US-listed fund. On a UK eToro account these can usually only be bought as a "
+                    f"CFD, which this app does not use. A London-listed UCITS fund is the usual alternative.")
+        elif inst.get("buyEnabled") is False:
+            warn = f"eToro reports that buying {sym} ({name}) is currently disabled."
+        if warn:
+            return settings_page(wl_error=warn + " Tick 'Add anyway' to add it regardless.",
+                                 wl_form={**form, "can_force": True}, status=400)
+    entry = _entry_for(sym, research, inst)
+    store.set_setting("watchlist", f"{cur},{entry}" if cur.strip() else entry)
+    store.log("info", f"watchlist: added {entry} ({name}, {cls or 'unknown type'}) after eToro check")
+    markets.invalidate()
+    return RedirectResponse(f"{B}/settings?msg=" + quote(f"Added {sym}: {name}" + (f" ({cls})" if cls else "") + "."),
+                            status_code=303)
+
+
+@app.post("/watchlist/remove")
+def watchlist_remove(symbol: str = Form(...)):
+    sym = symbol.strip().upper()
+    items = policy.parse_watchlist(store.get_settings()["watchlist"])
+    keep = [i for i in items if i.symbol != sym]
+    if len(keep) == len(items):
+        return RedirectResponse(f"{B}/settings?msg=" + quote(f"{sym} was not on the watchlist."), status_code=303)
+    raw = [e.strip() for e in store.get_settings()["watchlist"].replace("\n", ",").split(",") if e.strip()]
+    raw = [e for e in raw if policy.parse_watchlist(e)[0].symbol != sym]
+    store.set_setting("watchlist", ",".join(raw))
+    store.log("info", f"watchlist: removed {sym}")
+    return RedirectResponse(f"{B}/settings?msg=" + quote(f"Removed {sym}. Any holding in it is unchanged."),
+                            status_code=303)
 
 
 def keystate(name: str, env_value: str) -> str:
@@ -819,7 +928,7 @@ NUMERIC = {"analyses_per_day", "max_trade_usd", "max_daily_usd", "max_trades_per
 @app.post("/settings")
 async def save_settings(request: Request):
     form = await request.form()
-    keys = ["watchlist", *NUMERIC, *TIME_FIELDS]
+    keys = [*NUMERIC, *TIME_FIELDS] + (["watchlist"] if "watchlist" in form else [])   # watchlist has its own editor
     vals = {k: str(form.get(k, "")).strip() for k in keys}
     vals["allow_sells"] = "on" if form.get("allow_sells") == "on" else "off"
     vals["auto_sells"] = "on" if form.get("auto_sells") == "on" else "off"
