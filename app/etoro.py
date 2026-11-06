@@ -211,13 +211,18 @@ class EtoroClient:
         return Book(cash_usd=round(cash, 2), total_usd=round(total, 2), holdings=holdings)
 
     # ---- trading --------------------------------------------------------
-    def open_buy(self, symbol: str, instrument_id: int, amount_usd: float) -> dict:
+    def open_buy(self, symbol: str, instrument_id: int, amount_usd: float,
+                 stop_loss: float | None = None, take_profit: float | None = None) -> dict:
         path = "/api/v2/trading/execution/demo/orders" if self.demo else "/api/v2/trading/execution/orders"
         # eToro rejects open orders that carry both symbol and instrumentId ("exactly one" must be given).
         # The id is unambiguous (eToro 'CVX' is a crypto token, Chevron is 'CVX.US'), so send only that.
         body = {"action": "open", "transaction": "buy", "instrumentId": int(instrument_id),
                 "orderType": "mkt", "leverage": 1, "amount": round(float(amount_usd), 2),
                 "orderCurrency": "usd"}
+        if stop_loss:
+            body["stopLossRate"] = round(float(stop_loss), 6)
+        if take_profit:
+            body["takeProfitRate"] = round(float(take_profit), 6)
         if self.demo:
             body["settlement"] = "real"
         return self._req("POST", path, json=body, retries=0)

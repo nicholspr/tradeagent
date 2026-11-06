@@ -231,6 +231,8 @@ def scan(horizon: str = "medium") -> dict:
             book = None
         text, urls = call_model(build_prompt(store.get_settings(), book, horizon=horizon), system_for(horizon))
         items = verify_on_etoro(clean(parse(text), urls))
+        for it in items:
+            it["term"] = horizon                       # remembered when the idea is added to the watchlist
         if not items:
             raise ValueError("no usable opportunities with verifiable sources were returned")
         store.finish_scan(sid, items)

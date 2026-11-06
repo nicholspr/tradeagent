@@ -1627,3 +1627,61 @@ def test_opportunity_short_horizon_prompt(eng):
     assert "within days to a few weeks" in opportunities.system_for("short")
     assert "over months rather than days" in opportunities.system_for("medium")
     assert opportunities.build_prompt(s, None, today="x", horizon="bogus") == opportunities.build_prompt(s, None, today="x")
+
+
+def test_short_term_idea_gets_agent_note_and_stops_on_the_order(eng, monkeypatch):
+    engine, store, sent, fs, rating = eng
+    from app import terms, policy, config
+    store.set_setting("mode", "auto")
+    store.set_setting("watchlist", "META,GOOG")
+    terms.set_term("META", terms.SHORT, "test")
+    assert terms.term("META") == "short" and terms.term("GOOG") == "medium"
+    seen = {}
+    decision = "Rating: Buy ... Stop-loss: $570.00 and Take-profit: 660 over the next 2-3 weeks."
+    monkeypatch.setattr(engine.analyst, "analyze",
+                        lambda t, a, p, rules="": seen.update(rules=rules) or ("Buy", decision))
+    monkeypatch.setattr(terms, "call_model", lambda p: "{}")
+    fs.calls.clear()
+    engine.analyse(policy.parse_watchlist("META")[0])
+    assert "SHORT TERM" in seen["rules"] and "Stop-loss: <price>" in seen["rules"]
+    body = [c for c in fs.calls if c[0] == "POST"][-1][3]
+    assert body["stopLossRate"] == 570.0 and body["takeProfitRate"] == 660.0 and "symbol" not in body
+    p = store.proposals(None, 1)[0]
+    assert p["term"] == "short" and "stop 570" in engine._describe(p) and "take-profit 660" in engine._describe(p)
+    # a medium-term symbol is analysed without the note and its buy carries no levels
+    terms.set_term("META", "medium")
+    store.set_setting("cooldown_days", "0")
+    fs.calls.clear()
+    engine.analyse(policy.parse_watchlist("META")[0])
+    assert "SHORT TERM" not in seen["rules"]
+    posts = [c for c in fs.calls if c[0] == "POST"]
+    assert not posts or "stopLossRate" not in posts[-1][3]
+
+
+def test_stop_levels_sanity_and_live_recheck(eng, monkeypatch):
+    engine, store, sent, fs, rating = eng
+    from app import terms
+    monkeypatch.setattr(terms, "call_model", lambda p: '{"stop_loss": 300, "take_profit": 2000}')
+    sl, tp, note = terms.stops_from("META", "no levels in text", 600.0)
+    assert sl is None and tp is None and "ignored" in note                # 50% below / 230% above: rejected
+    sl, tp, note = terms.stops_from("META", "Stop-loss 585, take-profit 650", 600.0)
+    assert (sl, tp) == (585.0, 650.0)
+    # at execution, a stop the price has already fallen through is dropped rather than closing instantly
+    assert engine._live_stops({"stop_loss": 585.0, "take_profit": 650.0}, {"rate": 584.0}) == (None, 650.0)
+    assert engine._live_stops({"stop_loss": 585.0, "take_profit": 650.0}, {"rate": 600.0}) == (585.0, 650.0)
+
+
+def test_watchlist_term_toggle_and_opportunity_short_tag(eng, monkeypatch):
+    engine, store, sent, fs, rating = eng
+    from fastapi.testclient import TestClient
+    from app import web, markets, terms
+    monkeypatch.setattr(web.sched, "start", lambda: None)
+    monkeypatch.setattr(markets, "watchlist_rows", lambda ec, syms: [{"symbol": x, "name": x, "price": 1.0} for x in syms])
+    monkeypatch.setattr(markets, "portfolio_snapshot", lambda ec: {"book": type("B", (), {"holdings": {}})()})
+    store.set_setting("watchlist", "META")
+    with TestClient(web.app) as c:
+        assert "Make short term" in c.get("/settings").text
+        c.post("/watchlist/term", data={"symbol": "META", "term": "short"})
+        assert terms.term("META") == "short" and "short term</span>" in c.get("/settings").text
+        c.post("/watchlist/remove", data={"symbol": "META"})
+        assert terms.term("META") == "medium"                              # removing forgets the tag

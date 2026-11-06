@@ -1,12 +1,13 @@
 """Orchestration: analyse -> propose -> (signal | approve | auto-execute) -> notify."""
 import hashlib
+import re
 from html import escape
 import hmac
 import threading
 from datetime import datetime, timedelta, timezone
 from zoneinfo import ZoneInfo
 
-from . import analyst, config, levels, notify, performance, policy, store
+from . import analyst, config, levels, notify, performance, policy, store, terms
 from .etoro import EtoroClient, EtoroError
 
 _run_lock = threading.Lock()          # one analysis at a time (LLM cost + rate limits)
@@ -75,7 +76,12 @@ def _portfolio_context(book) -> dict:
 
 def _describe(p: dict) -> str:
     if p["action"] == "buy":
-        return f"BUY {p['ticker']} ${p['amount_usd']:.2f}"
+        lv = []
+        if p.get("stop_loss"):
+            lv.append(f"stop {p['stop_loss']:g}")
+        if p.get("take_profit"):
+            lv.append(f"take-profit {p['take_profit']:g}")
+        return f"BUY {p['ticker']} ${p['amount_usd']:.2f}" + (f" ({', '.join(lv)})" if lv else "")
     if p["action"] == "close":
         return f"SELL ALL {p['ticker']} (~${p['amount_usd']:.2f})"
     return f"SELL HALF {p['ticker']} (~${p['amount_usd']:.2f})"
@@ -145,6 +151,9 @@ def _analyse(item: policy.WatchItem, *, manual: bool) -> dict:
         book = ec.book()
         store.log("info", f"analysing {item.symbol} ({item.yf}, {item.asset_type}) with quick={config.model_for('quick')} deep={config.model_for('deep')}")
         rules = policy.account_rules(s)
+        short = terms.agent_note(item.symbol)
+        if short:
+            rules += "\n\n" + short
         note = levels.trigger_note(item.symbol)
         if note:
             rules += "\n\n" + note
@@ -168,14 +177,21 @@ def _analyse(item: policy.WatchItem, *, manual: bool) -> dict:
     hv, hpos, hpend = (h.value_usd, h.positions, h.pending_usd) if h else (0.0, [], 0.0)
     prop = policy.propose(rating, holding_value=hv, holding_positions=hpos, pending_usd=hpend,
                           cash=book.cash_usd, portfolio_total=book.total_usd, s=s)
-    return _act(item.symbol, inst, book, s, rating, decision, run_id, prop, manual)
+    stops = None
+    if prop.action == "buy" and terms.term(item.symbol) == terms.SHORT:
+        stops = terms.stops_from(item.yf, decision, _float(inst.get("rate")))
+        store.log("info", f"{item.symbol} short-term levels: stop-loss {stops[0]}, take-profit {stops[1]}"
+                          + (f" ({stops[2]})" if stops[2] else ""))
+    return _act(item.symbol, inst, book, s, rating, decision, run_id, prop, manual, stops=stops)
 
 
-def _act(symbol, inst, book, s, rating, decision, run_id, prop, manual=False) -> dict:
+def _act(symbol, inst, book, s, rating, decision, run_id, prop, manual=False, stops=None) -> dict:
     """Route a proposal by mode: signal, approval request, or automatic execution."""
     base = {"run_id": run_id, "ticker": symbol, "instrument_id": inst["instrumentId"],
             "action": prop.action, "amount_usd": prop.amount_usd, "units": prop.units,
             "position_ids": prop.position_ids, "rating": rating, "mode": s["mode"]}
+    if stops:
+        base.update(stop_loss=stops[0], take_profit=stops[1], term=terms.SHORT)
 
     if prop.action == "none":
         store.log("info", f"{symbol}: {prop.reason}")
@@ -430,7 +446,17 @@ def execute(pid: int) -> dict:
             try:
                 refs = []
                 if sized.action == "buy":
-                    r = ec.open_buy(inst["symbol"], inst["instrumentId"], sized.amount_usd)
+                    sl, tp = _live_stops(p, inst)
+                    try:
+                        r = ec.open_buy(inst["symbol"], inst["instrumentId"], sized.amount_usd, stop_loss=sl, take_profit=tp)
+                    except EtoroError as e:
+                        if not (sl or tp) or not re.search(r"stop|take|rate", str(e), re.I):
+                            raise
+                        # eToro refused the levels (not the trade): nothing was placed, so place it once without them
+                        audit(pid, "stop/take-profit refused by eToro; placing without them", str(e)[:200])
+                        notify.both("Stop levels refused", f"TradeAgent: eToro refused the stop/take-profit for {p['ticker']}; "
+                                    "the buy is being placed without them. Set them in the eToro app.", str(e))
+                        r = ec.open_buy(inst["symbol"], inst["instrumentId"], sized.amount_usd)
                     refs.append(str(r.get("orderId") or r.get("token") or r))
                 else:
                     for pos_id in sized.position_ids:
@@ -458,6 +484,17 @@ def execute(pid: int) -> dict:
             notify.both(f"Executed: {desc}", f"TradeAgent [{env}] placed: {desc}. Order {','.join(refs)}",
                         f"Placed {desc} on your {env} eToro account.\nOrder refs: {refs}\nRating: {p['rating']}")
         return {"executed": True, "orders": refs}
+
+
+def _live_stops(p: dict, inst: dict) -> tuple[float | None, float | None]:
+    """Re-check a proposal's stop-loss / take-profit against the price now; drop any that no longer make sense."""
+    price = _float(inst.get("rate"))
+    sl, tp = p.get("stop_loss"), p.get("take_profit")
+    if price and sl and not sl < price * (1 - terms.STOP_MIN / 2):
+        sl = None                                  # price has already fallen to (or through) the stop
+    if price and tp and not tp > price * (1 + terms.TP_MIN / 2):
+        tp = None                                  # price has already reached the target
+    return sl, tp
 
 
 def _fail(pid: int, err: str) -> dict:

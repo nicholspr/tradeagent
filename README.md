@@ -97,6 +97,15 @@ The watchlist is a table with one row per symbol, showing:
 
 Every add and delete is logged. The other settings below are saved separately and never change the watchlist.
 
+**Holding period per symbol (short-term ideas).** Each symbol is either **medium term** (the default) or **short term** (a few days to about four weeks). Ideas added from a short-term Opportunities scan are tagged short term automatically. You can also choose the holding period when adding a symbol, or switch it with the **Make short term / Make medium term** button on its row. For a short-term symbol:
+- **The agents are told the horizon.** The deciding agents judge the rating over days to weeks rather than the long-term story, and for any Buy or Overweight they must give a **stop-loss** (below the price) and a **take-profit** (above it).
+- **The levels go on the eToro order.** They are read from the report (by pattern, falling back to a small Haiku call) and sent with the buy as `stopLossRate` and `takeProfitRate`. **eToro itself** then closes the position at either price, even if this app is offline. You'll see them in the trade description, e.g. "BUY META $75.00 (stop 570, take-profit 660)", and in approvals and emails.
+- **Safety checks:**
+  - A stop must sit 1–25% below the price and a take-profit 1–50% above it; anything else is ignored and logged.
+  - At execution, a level the price has already passed is dropped, so an order is never closed the moment it opens.
+  - If eToro refuses the levels, the buy is placed once without them and you are alerted, so you can set them in the eToro app.
+- **Removing the symbol** clears its tag. Medium-term symbols never get stops attached.
+
 ### Schedule
 
 | Setting | Current | Code default | What it does |
@@ -333,7 +342,7 @@ Removing an entry does not sell it; holdings stay until sold. London (`.L`) inst
 
 ```bash
 pip install -r requirements.txt
-python -m pytest -q tests          # 63 tests, all offline (fakes for eToro, Claude, email)
+python -m pytest -q tests          # 66 tests, all offline (fakes for eToro, Claude, email)
 DATA_DIR=./data uvicorn app.web:app --reload
 ```
 
@@ -346,6 +355,7 @@ On Windows, `run-local.bat` runs the full app at `http://localhost:8000/`. It al
 | `app/analyst.py` | Adapts the TradingAgents graph. Builds the portfolio context plus the account rules the agents see. |
 | `app/policy.py` | Watchlist parsing, rating → proposal, hard limits, approval rules, and the account-rules text. Pure functions, fully tested. |
 | `app/engine.py` | Analysis, proposals, approval, execution, the queue, scheduled runs, pre-flight, overrides, the daily summary, the audit trail and one-off fixes. |
+| `app/terms.py` | Holding period per symbol; the short-term agent note; stop-loss and take-profit extraction and sanity checks. |
 | `app/levels.py` | Watch levels: extraction, the overnight check, queue priority, agent notes and backfill. |
 | `app/scorecard.py` | Scorecard: returns after each call at 5, 20 and 60 days against VWRL.L, hit rates by rating, models and symbol. |
 | `app/performance.py` | End-of-day performance per holding, daily snapshots, and the summary's text and HTML. |

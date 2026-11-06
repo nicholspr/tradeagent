@@ -27,6 +27,7 @@ DEFAULTS = {
     "deep_model": "claude-sonnet-5",     # 2 deciding agents (Research Manager, Portfolio Manager)
     "opp_model": "claude-sonnet-5",      # Opportunities web-search scan
     "daily_reset_at": "",
+    "watch_meta": "{}",              # per-symbol holding period, e.g. {"NVDA": {"term": "short", ...}}
     "live_limits_applied": "",
     "watchlist_fix_applied": "",
     "levels_backfill_applied": "",   # set once by engine.backfill_levels_once()     # set once by engine.apply_watchlist_fix_once()       # set once by engine.apply_live_limits_once()            # set by the Settings "Reset daily limits" button; not a form field
@@ -77,6 +78,10 @@ def init() -> None:
         for col, kind in (("price", "REAL"), ("models", "TEXT")):
             if col not in run_cols:
                 c.execute(f"ALTER TABLE runs ADD COLUMN {col} {kind}")      # scorecard: price and models at analysis
+        prop_cols = [r["name"] for r in c.execute("PRAGMA table_info(proposals)")]
+        for col, kind in (("stop_loss", "REAL"), ("take_profit", "REAL"), ("term", "TEXT")):
+            if col not in prop_cols:
+                c.execute(f"ALTER TABLE proposals ADD COLUMN {col} {kind}")   # short-term ideas: levels sent with the order
         if "override" not in [r["name"] for r in c.execute("PRAGMA table_info(proposals)")]:
             c.execute("ALTER TABLE proposals ADD COLUMN override INTEGER DEFAULT 0")   # existing databases
         for k, v in DEFAULTS.items():
@@ -168,7 +173,7 @@ def add_proposal(p: dict) -> int:
     p.setdefault("created", _now())
     p["position_ids"] = json.dumps(p.get("position_ids") or [])
     cols = ["run_id", "ticker", "instrument_id", "action", "amount_usd", "units", "position_ids",
-            "rating", "reason", "status", "mode", "created"]
+            "rating", "reason", "status", "mode", "created", "stop_loss", "take_profit", "term"]
     with _lock, connect() as c:
         cur = c.execute(f"INSERT INTO proposals({','.join(cols)}) VALUES ({','.join('?' * len(cols))})",
                         [p.get(k) for k in cols])

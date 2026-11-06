@@ -138,9 +138,9 @@ def account_rules(s: dict) -> str:
              if s.get("allow_sells") == "on" else "Sells are switched off: Underweight and Sell do nothing.")
     return (
         "Account rules (enforced automatically by the platform; they cannot be changed by this analysis):\n"
-        "- Long-only, unleveraged market orders at the current price. Limit, entry, stop-loss and take-profit "
-        "orders are not available, so do not make them the recommended action; price levels may be given only "
-        "as levels for the investor to review.\n"
+        "- Long-only, unleveraged market orders at the current price. Limit and entry orders are not available, so "
+        "do not make them the recommended action; price levels may be given as levels for the investor to review. "
+        "Stop-loss and take-profit prices are attached to the order only for short-term ideas (see below).\n"
         f"- The rating alone sets the trade: Buy opens or adds ${n('max_trade_usd')}; Overweight adds "
         f"${half:,.2f}; Hold does nothing. {sells}\n"
         f"- At most ${n('max_daily_usd')} of buys and {n('max_trades_per_day')} trades per day; at least "

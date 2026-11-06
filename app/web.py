@@ -12,7 +12,7 @@ from apscheduler.triggers.cron import CronTrigger
 from fastapi import FastAPI, Form, HTTPException, Request
 from fastapi.responses import HTMLResponse, RedirectResponse
 
-from . import performance, scorecard, config, engine, markets, opportunities, policy, store
+from . import performance, scorecard, terms, config, engine, markets, opportunities, policy, store
 
 sched = BackgroundScheduler(timezone=config.TZ)
 
@@ -795,10 +795,17 @@ def watchlist_editor(s: dict, msg: str = "", error: str = "", form: dict | None 
         else:
             price = "<span class=muted>—</span>"
         own = " <span class='pill okp'>held</span>" if i.symbol in held else ""
+        short = terms.term(i.symbol) == terms.SHORT
+        own += " <span class='pill warn'>short term</span>" if short else ""
+        toggle = (f"<form method=post action='{B}/watchlist/term' style='display:inline'>"
+                  f"<input type=hidden name=symbol value='{esc(i.symbol)}'>"
+                  f"<input type=hidden name=term value={'medium' if short else 'short'}>"
+                  f"<button class=sec title='Short term: analysed for a days-to-weeks hold, with a stop-loss and "
+                  f"take-profit attached to any buy'>{'Make medium term' if short else 'Make short term'}</button></form> ")
         warn = ("This only stops the agent researching and buying it. It does not sell your holding."
                 if i.symbol in held else "Remove from the watchlist?")
         rows += (f"<tr><td><b>{esc(i.symbol)}</b>{own}{research}</td><td>{esc(q.get('name') or '')}</td><td>{kind}</td>"
-                 f"<td>{price}</td><td><form method=post action='{B}/watchlist/remove' "
+                 f"<td>{price}</td><td style='white-space:nowrap'>{toggle}<form method=post action='{B}/watchlist/remove' style='display:inline' "
                  f"onsubmit=\"return confirm('{esc(i.symbol)}: {esc(warn)}')\">"
                  f"<input type=hidden name=symbol value='{esc(i.symbol)}'><button class=sec>Delete</button></form></td></tr>")
     tbl = table(rows or "<tr><td class=muted>The watchlist is empty.</td></tr>",
@@ -813,6 +820,9 @@ def watchlist_editor(s: dict, msg: str = "", error: str = "", form: dict | None 
            f"placeholder='e.g. NVDA, IUHC.L, ETH' required></div>"
            f"<div class=grow><label>Research ticker <span class=unit>optional, if Yahoo uses a different one</span></label>"
            f"<input name=research value='{esc(form.get('research', ''))}' placeholder='e.g. CVX for CVX.US'></div>"
+           f"<div style='min-width:170px'><label>Holding period</label><select name=term>"
+           f"<option value=medium {'selected' if form.get('term') != 'short' else ''}>Medium term</option>"
+           f"<option value=short {'selected' if form.get('term') == 'short' else ''}>Short term</option></select></div>"
            f"<button>Check on eToro and add</button>{force}</form>"
            "<p class=muted>The symbol is looked up on eToro before it is added. Crypto is detected automatically and "
            "researched as SYMBOL-USD. US-listed funds (ETFs) are flagged, because on a UK account they can only be "
@@ -830,9 +840,9 @@ def _entry_for(symbol: str, research: str, inst: dict) -> str:
 
 
 @app.post("/watchlist/add", response_class=HTMLResponse)
-def watchlist_add(symbol: str = Form(...), research: str = Form(""), force: str = Form("")):
+def watchlist_add(symbol: str = Form(...), research: str = Form(""), force: str = Form(""), term: str = Form("medium")):
     sym, research = symbol.strip().upper(), research.strip().upper()
-    form = {"symbol": sym, "research": research}
+    form = {"symbol": sym, "research": research, "term": term}
     cur = store.get_settings()["watchlist"]
     if not sym or any(c in sym for c in ",=@ "):
         return settings_page(wl_error="Enter one eToro symbol, e.g. NVDA or IUHC.L.", wl_form=form, status=400)
@@ -857,10 +867,24 @@ def watchlist_add(symbol: str = Form(...), research: str = Form(""), force: str 
                                  wl_form={**form, "can_force": True}, status=400)
     entry = _entry_for(sym, research, inst)
     store.set_setting("watchlist", f"{cur},{entry}" if cur.strip() else entry)
-    store.log("info", f"watchlist: added {entry} ({name}, {cls or 'unknown type'}) after eToro check")
+    terms.set_term(sym, term, "added on the Settings page")
+    store.log("info", f"watchlist: added {entry} ({name}, {cls or 'unknown type'}) after eToro check"
+                      + (" as a short-term idea" if term == terms.SHORT else ""))
     markets.invalidate()
     return RedirectResponse(f"{B}/settings?msg=" + quote(f"Added {sym}: {name}" + (f" ({cls})" if cls else "") + "."),
                             status_code=303)
+
+
+@app.post("/watchlist/term")
+def watchlist_term(symbol: str = Form(...), term: str = Form("medium")):
+    sym = symbol.strip().upper()
+    if sym not in {i.symbol for i in policy.parse_watchlist(store.get_settings()["watchlist"])}:
+        raise HTTPException(404, "not in watchlist")
+    terms.set_term(sym, term, "changed on the Settings page")
+    store.log("info", f"watchlist: {sym} set to {'short' if term == terms.SHORT else 'medium'} term")
+    return RedirectResponse(f"{B}/settings?msg=" + quote(
+        f"{sym} is now {'a short-term idea: analyses judge it over days to weeks and any buy carries a stop-loss and take-profit' if term == terms.SHORT else 'medium term'}."),
+        status_code=303)
 
 
 @app.post("/watchlist/remove")
@@ -873,6 +897,7 @@ def watchlist_remove(symbol: str = Form(...)):
     raw = [e.strip() for e in store.get_settings()["watchlist"].replace("\n", ",").split(",") if e.strip()]
     raw = [e for e in raw if policy.parse_watchlist(e)[0].symbol != sym]
     store.set_setting("watchlist", ",".join(raw))
+    terms.forget(sym)
     store.log("info", f"watchlist: removed {sym}")
     return RedirectResponse(f"{B}/settings?msg=" + quote(f"Removed {sym}. Any holding in it is unchanged."),
                             status_code=303)
@@ -1033,7 +1058,10 @@ def opportunities_watch(symbol: str):
     cur = store.get_settings()["watchlist"]
     if o["symbol"] not in {i.symbol for i in policy.parse_watchlist(cur)}:
         store.set_setting("watchlist", f"{cur},{watch_entry(o)}" if cur.strip() else watch_entry(o))
-        store.log("info", f"{o['symbol']} added to watchlist from opportunity scan #{scan['id']}")
+        if o.get("term") == terms.SHORT:
+            terms.set_term(o["symbol"], terms.SHORT, f"opportunity scan #{scan['id']}")
+        store.log("info", f"{o['symbol']} added to watchlist from opportunity scan #{scan['id']}"
+                          + (" as a short-term idea" if o.get("term") == terms.SHORT else ""))
     return back("/opportunities")
 
 
