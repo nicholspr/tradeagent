@@ -1719,7 +1719,7 @@ def test_daytrader_page_and_api(eng, monkeypatch):
         assert r.status_code == 200 and "Day trader" in r.text and "dt-chart" in r.text and "data-root" in r.text
         assert c.get("/daytrader/search?q=nvd").json()[0]["symbol"] == "NVDA"
         assert c.get("/daytrader/candles/1137").json()["instrumentId"] == 1137
-        assert "dt-paper" in r.text and "Paper trade" in r.text
+        assert "Open paper trades" in r.text and "Closed paper trades" in r.text and "breakEven" in r.text
         assert "Day trader" in c.get("/").text                     # in the top menu
     assert not orders(fs)                                          # the page never trades
 
