@@ -1084,6 +1084,12 @@ border-radius:10px;max-height:340px;overflow:auto;display:none;box-shadow:0 8px 
 .dt-big{font-size:28px;font-weight:700;font-variant-numeric:tabular-nums}
 .dt-kv .tot{font-weight:700;border-top:1px solid var(--line);padding-top:6px}
 .dt-paper button{width:100%;margin-top:6px}.dt-paper button.close{background:#b91c1c}.dt-paper button.close:hover{background:#991b1b}
+.dt-pos{border:1px solid var(--line);border-radius:10px;padding:10px;margin-bottom:8px}
+.dt-prow{display:flex;flex-wrap:wrap;gap:4px 10px;align-items:baseline}.dt-prow a{color:var(--text);text-decoration:none}
+.dt-pl{margin-left:auto;font-weight:700;font-size:17px;font-variant-numeric:tabular-nums}.dt-pl small{font-size:12px;font-weight:600}
+.dt-pos details{margin-top:6px}.dt-pos summary{font-weight:500;font-size:12px}
+.dt-paper button.sm{width:auto;min-height:30px;padding:5px 14px;margin-top:8px;font-size:13px}
+.dt-last{margin-top:16px;padding-top:12px;border-top:1px solid var(--line)}
 .dt-set{display:grid;grid-template-columns:1fr 1fr;gap:8px;margin-top:10px}
 @media(max-width:700px){#dt-chart{height:320px}}
 """
@@ -1168,9 +1174,9 @@ function draw(){const svg=$('dt-chart'),W=svg.clientWidth||800,H=svg.clientHeigh
     g+='<line x1=\"'+L+'\" x2=\"'+(L+pw)+'\" y1=\"'+y+'\" y2=\"'+y+'\" stroke=\"#3b82f6\" stroke-dasharray=\"4 3\"/>'
      +'<rect x=\"'+(L+pw+2)+'\" y=\"'+(y-9)+'\" width=\"'+(R-4)+'\" height=\"18\" rx=\"4\" fill=\"#3b82f6\"/>'
      +'<text x=\"'+(L+pw+6)+'\" y=\"'+(y+4)+'\" style=\"fill:#fff\">'+fmt(data.open?q.bid:cs[cs.length-1].c)+'</text>';}
-  if(typeof pos!=='undefined'&&pos&&pos.iid===data.instrumentId&&pos.ask>=lo&&pos.ask<=hi){const y=Y(pos.ask);
+  if(typeof open_!=='undefined')open_.filter(p=>p.iid===data.instrumentId&&p.ask>=lo&&p.ask<=hi).forEach(p=>{const y=Y(p.ask);
     g+='<line x1=\"'+L+'\" x2=\"'+(L+pw)+'\" y1=\"'+y+'\" y2=\"'+y+'\" stroke=\"#f59e0b\" stroke-dasharray=\"6 4\"/>'
-     +'<text x=\"'+(L+6)+'\" y=\"'+(y-5)+'\" style=\"fill:#f59e0b\">Paper buy '+fmt(pos.ask)+'</text>';}
+     +'<text x=\"'+(L+6)+'\" y=\"'+(y-5)+'\" style=\"fill:#f59e0b\">Paper buy '+fmt(p.ask)+' ('+hm(p.t)+')</text>';});
   if(hover!=null){const c=cs.find(c=>hover>=c.t&&hover<c.t+c.d);
     if(c){const x=X(c.t+c.d/2);g+='<line x1=\"'+x+'\" x2=\"'+x+'\" y1=\"'+T+'\" y2=\"'+(T+ph)+'\" stroke=\"#8b93a3\" stroke-dasharray=\"2 3\"/>';
       $('dt-ohlc').textContent=hms(c.t)+' ('+(c.d===60?'1 min':'30 s')+')  O '+fmt(c.o)+'  H '+fmt(c.h)+'  L '+fmt(c.l)+'  C '+fmt(c.c);}}
@@ -1181,16 +1187,19 @@ function draw(){const svg=$('dt-chart'),W=svg.clientWidth||800,H=svg.clientHeigh
 function nice(x){const p=Math.pow(10,Math.floor(Math.log10(x))),f=x/p;return (f<1.5?1:f<3?2:f<7?5:10)*p;}
 addEventListener('resize',draw);
 
-// ---- paper trade
+// ---- paper trades (several can be open at once)
 const AMT=100;
 const ld=(k,d)=>{try{const v=localStorage.getItem(k);return v==null?d:JSON.parse(v);}catch(e){return d;}};
 const sv=(k,v)=>{try{localStorage.setItem(k,JSON.stringify(v));}catch(e){}};
-let pos=ld('dt-pos',null),pq=null,ptimer=null,last=null,hist=ld('dt-hist',[]);
+let open_=ld('dt-open',null);
+if(!Array.isArray(open_)){const one=ld('dt-pos',null);open_=one?[Object.assign({id:'p'+Date.now()},one)]:[];sv('dt-open',open_);sv('dt-pos',null);}
+let qs={},ptimer=null,last=null,hist=ld('dt-hist',[]),busy=false;
 const cfg=ld('dt-cfg',{comm:1,fx:0});$('dt-comm').value=cfg.comm;$('dt-fx').value=cfg.fx;
 $('dt-comm').onchange=$('dt-fx').oninput=()=>{cfg.comm=+$('dt-comm').value;cfg.fx=Math.max(0,+$('dt-fx').value||0);sv('dt-cfg',cfg);paint();};
 const money=v=>(v<0?'-$':'$')+Math.abs(v).toFixed(2);
 const sgn=v=>(v>=0?'+':'-')+'$'+Math.abs(v).toFixed(2);
 const cls=v=>v>=0?'dt-up':'dt-dn';
+const pc=(v,b)=>{const p=v/b*100;return (p>=0?'+':'')+p.toFixed(2)+'%';};
 const dur=s=>{s=Math.round(s);const h=Math.floor(s/3600),m=Math.floor(s%3600/60),x=s%60;return (h?h+'h ':'')+(h||m?m+'m ':'')+x+'s';};
 // eToro cost rules for one round trip: buy `amt` at `ask`, sell at `bid`
 function costs(p,bid){const units=p.amt/p.ask,value=units*bid,lines=[];
@@ -1200,57 +1209,82 @@ function costs(p,bid){const units=p.amt/p.ask,value=units*bid,lines=[];
   if(p.fx>0){lines.push(['Currency conversion (in)',p.amt*p.fx/100]);lines.push(['Currency conversion (out)',value*p.fx/100]);}
   const fees=lines.reduce((a,l)=>a+l[1],0),gross=value-p.amt;
   return {units,value,gross,lines,fees,net:gross-fees,spread:units*(p.ask-p.bid0)};}
-function poll(){clearTimeout(ptimer);const iid=pos?pos.iid:(cur&&cur.instrumentId);if(!iid)return;
-  fetch(B+'/daytrader/quote/'+iid).then(r=>{if(!r.ok)throw 0;return r.json();}).then(q=>{pq=q;paint();})
-  .catch(()=>{}).finally(()=>{ptimer=setTimeout(poll,pos?5000:30000);});}
-function openPos(){if(!cur)return;$('dt-pbody').querySelector('button').disabled=true;
-  fetch(B+'/daytrader/quote/'+cur.instrumentId).then(r=>{if(!r.ok)throw 0;return r.json();}).then(q=>{
-    if(!q.open&&!confirm('The market looks closed, so this price is stale. Open anyway?')){paint();return;}
-    pos={iid:cur.instrumentId,symbol:cur.symbol,name:cur.name||'',kind:(data&&data.kind)||kindOf(cur.type),
-      amt:AMT,ask:q.ask,bid0:q.bid,t:Date.now()/1000,comm:cfg.comm,fx:cfg.fx};
-    sv('dt-pos',pos);last=null;pq=q;paint();poll();draw();}).catch(()=>{alert('Could not get a price from eToro, try again.');paint();});}
-function closePos(){if(!pos)return;$('dt-pbody').querySelector('button').disabled=true;
-  fetch(B+'/daytrader/quote/'+pos.iid).then(r=>{if(!r.ok)throw 0;return r.json();}).then(q=>{
-    const c=costs(pos,q.bid);last=Object.assign({},pos,{exit:q.bid,tc:Date.now()/1000},c);
-    hist.unshift({symbol:pos.symbol,t:pos.t,tc:last.tc,ask:pos.ask,exit:q.bid,gross:c.gross,fees:c.fees,net:c.net});hist=hist.slice(0,10);
-    sv('dt-hist',hist);pos=null;sv('dt-pos',null);paint();draw();poll();})
-  .catch(()=>{alert('Could not get a price from eToro, try again.');paint();});}
+const getQ=ids=>fetch(B+'/daytrader/quotes?ids='+ids.join(',')).then(r=>{if(!r.ok)throw 0;return r.json();});
+function poll(){clearTimeout(ptimer);const ids=[...new Set(open_.map(p=>p.iid).concat(cur?[cur.instrumentId]:[]))];
+  if(!ids.length)return;
+  getQ(ids).then(d=>{Object.keys(d).forEach(k=>qs[k]=d[k]);paint();}).catch(()=>{})
+  .finally(()=>{ptimer=setTimeout(poll,open_.length?5000:30000);});}
+function openPos(){if(!cur||busy)return;busy=true;paint();
+  getQ([cur.instrumentId]).then(d=>{const q=d[cur.instrumentId];if(!q)throw 0;qs[cur.instrumentId]=q;
+    if(!q.open&&!confirm('The market looks closed, so this price is stale. Open anyway?'))return;
+    open_.push({id:'p'+Date.now()+Math.random().toString(36).slice(2,6),iid:cur.instrumentId,symbol:cur.symbol,name:cur.name||'',
+      kind:(data&&data.instrumentId===cur.instrumentId&&data.kind)||kindOf(cur.type),amt:AMT,ask:q.ask,bid0:q.bid,t:Date.now()/1000,comm:cfg.comm,fx:cfg.fx});
+    sv('dt-open',open_);last=null;draw();poll();})
+  .catch(()=>alert('Could not get a price from eToro, try again.')).finally(()=>{busy=false;paint();});}
+function closePos(id){const p=open_.find(x=>x.id===id);if(!p||busy)return;busy=true;paint();
+  getQ([p.iid]).then(d=>{const q=d[p.iid];if(!q)throw 0;qs[p.iid]=q;const c=costs(p,q.bid);
+    last=Object.assign({},p,{exit:q.bid,tc:Date.now()/1000},c);
+    hist.unshift({symbol:p.symbol,t:p.t,tc:last.tc,ask:p.ask,exit:q.bid,gross:c.gross,fees:c.fees,net:c.net});hist=hist.slice(0,20);
+    open_=open_.filter(x=>x.id!==id);sv('dt-open',open_);sv('dt-hist',hist);draw();})
+  .catch(()=>alert('Could not get a price from eToro, try again.')).finally(()=>{busy=false;paint();});}
+function closeAll(){if(!open_.length||busy)return;if(!confirm('Close all '+open_.length+' paper positions?'))return;busy=true;paint();
+  getQ([...new Set(open_.map(p=>p.iid))]).then(d=>{let done=[];
+    open_.forEach(p=>{const q=d[p.iid];if(!q)return;qs[p.iid]=q;const c=costs(p,q.bid),tc=Date.now()/1000;
+      hist.unshift({symbol:p.symbol,t:p.t,tc,ask:p.ask,exit:q.bid,gross:c.gross,fees:c.fees,net:c.net});done.push(p.id);});
+    hist=hist.slice(0,20);open_=open_.filter(p=>!done.includes(p.id));sv('dt-open',open_);sv('dt-hist',hist);last=null;draw();})
+  .catch(()=>alert('Could not get prices from eToro, try again.')).finally(()=>{busy=false;paint();});}
 function kindOf(t){t=(t||'').toLowerCase();return t.startsWith('crypto')?'crypto':t==='etf'?'etf':t.startsWith('stock')?'stock':'other';}
 const KN={crypto:'Crypto',stock:'Share',etf:'ETF',other:'CFD/other'};
 function kv(rows){return '<div class=dt-kv>'+rows.map(r=>'<span'+(r[2]?' class=\"'+r[2]+'\"':'')+'>'+r[0]+'</span><span'+(r[2]?' class=\"'+r[2]+'\"':'')+'>'+r[1]+'</span>').join('')+'</div>';}
-function paint(){const el=$('dt-pbody');if(!el)return;let h='';
-  if(pos){const q=pq&&pq.instrumentId===pos.iid?pq:null;
-    h+='<p><b>'+pos.symbol+'</b> <span class=muted>'+KN[pos.kind]+' · '+money(pos.amt)+' opened '+hms(pos.t)+' · open for '+dur(Date.now()/1000-pos.t)+'</span></p>';
-    if(q){const c=costs(pos,q.bid),pct=c.gross/pos.amt*100;
-      h+='<div class=\"dt-big '+cls(c.gross)+'\">'+sgn(c.gross)+' <span style=\"font-size:15px\">('+(pct>=0?'+':'')+pct.toFixed(2)+'%)</span></div>'
-       +'<div class=muted>Change in value'+(q.open?'':' · market closed, price not moving')+'</div>'
-       +kv([['Bought at (ask)',fmt(pos.ask)],['Now (bid)',fmt(q.bid)],['Units',c.units.toPrecision(6)],['Value now',money(c.value)],
-            ['Spread paid on entry',money(c.spread)],['Costs if closed now',money(c.fees)],['Net if closed now','<b class=\"'+cls(c.net)+'\">'+sgn(c.net)+'</b>']]);}
-    else h+='<p class=muted>Getting the price…</p>';
-    if(cur&&cur.instrumentId!==pos.iid)h+='<p class=muted>This position is in '+pos.symbol+', not the chart’s symbol.</p>';
-    h+='<button class=close>Close position</button>';}
-  else{if(last){const pct=last.net/last.amt*100;
-      h+='<p><b>Closed '+last.symbol+'</b> <span class=muted>held '+dur(last.tc-last.t)+'</span></p>'
-       +'<div class=\"dt-big '+cls(last.net)+'\">'+sgn(last.net)+' <span style=\"font-size:15px\">('+(pct>=0?'+':'')+pct.toFixed(2)+'%)</span></div>'
+function paint(){const el=$('dt-pbody');if(!el)return;let h='';const now=Date.now()/1000;
+  // open a new one
+  if(cur){const q=qs[cur.instrumentId],n=open_.filter(p=>p.iid===cur.instrumentId).length;
+    h+='<p class=muted>Open a theoretical $'+AMT+' buy of <b>'+cur.symbol+'</b>'+(q?' at the ask, '+fmt(q.ask):'')+'. Nothing is sent to eToro.'
+      +(n?' You already have '+n+' open in '+cur.symbol+'.':'')+'</p>'
+      +'<button class=open id=dt-openbtn'+(busy?' disabled':'')+'>Open $'+AMT+' position in '+cur.symbol+'</button>';}
+  // open positions
+  if(open_.length){let tg=0,tn=0;
+    const rows=open_.map(p=>{const q=qs[p.iid];if(!q)return '<div class=dt-pos><b>'+p.symbol+'</b> <span class=muted>getting the price…</span></div>';
+      const c=costs(p,q.bid);tg+=c.gross;tn+=c.net;
+      return '<div class=dt-pos'+(cur&&cur.instrumentId===p.iid?' style=\"border-color:#f59e0b55\"':'')+'>'
+        +'<div class=dt-prow><a href=\"#\" data-show=\"'+p.iid+'\"><b>'+p.symbol+'</b></a><span class=muted>'+KN[p.kind]+' · '+hms(p.t)+' · '+dur(now-p.t)+(q.open?'':' · closed')+'</span>'
+        +'<span class=\"dt-pl '+cls(c.gross)+'\">'+sgn(c.gross)+' <small>'+pc(c.gross,p.amt)+'</small></span></div>'
+        +'<details><summary>Bought '+fmt(p.ask)+' · now '+fmt(q.bid)+' · net if closed <b class=\"'+cls(c.net)+'\">'+sgn(c.net)+'</b></summary>'
+        +kv([['Units',c.units.toPrecision(6)],['Value now',money(c.value)],['Spread paid on entry',money(c.spread)],['Costs if closed now',money(c.fees)]])+'</details>'
+        +'<button class=\"close sm\" data-close=\"'+p.id+'\"'+(busy?' disabled':'')+'>Close</button></div>';}).join('');
+    h+='<h3 style=\"margin-top:16px\">Open positions ('+open_.length+')</h3>'+rows
+      +kv([['Total invested',money(open_.length*AMT)],['Total change in value','<span class=\"'+cls(tg)+'\">'+sgn(tg)+'</span>'],
+           ['Total net if all closed now','<b class=\"'+cls(tn)+'\">'+sgn(tn)+'</b>','tot']])
+      +(open_.length>1?'<button class=\"sec\" id=dt-closeall'+(busy?' disabled':'')+'>Close all</button>':'');}
+  // last closed breakdown
+  if(last){h+='<div class=dt-last><p><b>Closed '+last.symbol+'</b> <span class=muted>held '+dur(last.tc-last.t)+'</span> <a href=\"#\" id=dt-dismiss style=\"float:right\">dismiss</a></p>'
+       +'<div class=\"dt-big '+cls(last.net)+'\">'+sgn(last.net)+' <span style=\"font-size:15px\">('+pc(last.net,last.amt)+')</span></div>'
        +'<div class=muted>Final profit/loss after costs</div>'
        +kv([['Bought at (ask)',fmt(last.ask)],['Sold at (bid)',fmt(last.exit)],['Invested',money(last.amt)],['Value at close',money(last.value)],
             ['Price change (incl. spread '+money(last.spread)+')','<span class=\"'+cls(last.gross)+'\">'+sgn(last.gross)+'</span>']]
           .concat(last.lines.length?last.lines.map(l=>[l[0],'-'+money(l[1])]):[['Fees','none for '+KN[last.kind]+'s']])
-          .concat([['Total costs','-'+money(last.fees),'tot'],['Final profit/loss','<span class=\"'+cls(last.net)+'\">'+sgn(last.net)+'</span>','tot']]));}
-    if(cur){const q=pq&&pq.instrumentId===cur.instrumentId?pq:null;
-      h+='<p class=muted>Open a theoretical $'+AMT+' buy of <b>'+cur.symbol+'</b>'+(q?' at the ask, '+fmt(q.ask):'')+'. Nothing is sent to eToro.</p>'
-       +'<button class=open>Open $'+AMT+' position</button>';}}
-  el.innerHTML=h;const b=el.querySelector('button');if(b)b.onclick=pos?closePos:openPos;
-  const hl=$('dt-hist');
-  hl.innerHTML=hist.length?'<h3 style=\"margin-top:16px\">Recent paper trades</h3><div class=tbl><table><tr><th>Symbol</th><th>Held</th><th>Costs</th><th>Net</th></tr>'
+          .concat([['Total costs','-'+money(last.fees),'tot'],['Final profit/loss','<span class=\"'+cls(last.net)+'\">'+sgn(last.net)+'</span>','tot']]))+'</div>';}
+  el.innerHTML=h;
+  const ob=$('dt-openbtn');if(ob)ob.onclick=openPos;
+  const ca=$('dt-closeall');if(ca)ca.onclick=closeAll;
+  const dm=$('dt-dismiss');if(dm)dm.onclick=e=>{e.preventDefault();last=null;paint();};
+  el.querySelectorAll('[data-close]').forEach(b=>b.onclick=()=>closePos(b.dataset.close));
+  el.querySelectorAll('[data-show]').forEach(a=>a.onclick=e=>{e.preventDefault();const p=open_.find(x=>String(x.iid)===a.dataset.show);
+    if(p&&(!cur||cur.instrumentId!==p.iid))pick({instrumentId:p.iid,symbol:p.symbol,name:p.name});});
+  const hl=$('dt-hist'),tot=hist.reduce((a,x)=>a+x.net,0);
+  hl.innerHTML=hist.length?'<h3 style=\"margin-top:16px\">Closed paper trades</h3><div class=tbl><table><tr><th>Symbol</th><th>Held</th><th>Costs</th><th>Net</th></tr>'
     +hist.map(x=>'<tr><td>'+x.symbol+'</td><td>'+dur(x.tc-x.t)+'</td><td>'+money(x.fees)+'</td><td class=\"'+cls(x.net)+'\">'+sgn(x.net)+'</td></tr>').join('')
-    +'</table></div><p class=muted>Total net: <b class=\"'+cls(hist.reduce((a,x)=>a+x.net,0))+'\">'+sgn(hist.reduce((a,x)=>a+x.net,0))+'</b> · <a href=\"#\" id=dt-clear>clear</a></p>':'';
-  const cl=$('dt-clear');if(cl)cl.onclick=e=>{e.preventDefault();if(confirm('Clear the paper trade history?')){hist=[];sv('dt-hist',hist);paint();}};}
-setInterval(()=>{if(pos)paint();},1000);
+    +'</table></div><p class=muted>'+hist.length+(hist.length===1?' trade':' trades')+' · total net: <b class=\"'+cls(tot)+'\">'+sgn(tot)+'</b> · <a href=\"#\" id=dt-clear>clear</a></p>':'';
+  const cl=$('dt-clear');if(cl)cl.onclick=e=>{e.preventDefault();if(confirm('Clear the closed paper trade history?')){hist=[];sv('dt-hist',hist);paint();}};}
+// keep open <details> open across repaints
+let openDet=new Set();document.addEventListener('toggle',e=>{const d=e.target;if(d.tagName!=='DETAILS'||!d.closest('.dt-pos'))return;
+  const id=d.parentElement.querySelector('[data-close]').dataset.close;d.open?openDet.add(id):openDet.delete(id);},true);
+const _paint=paint;paint=function(){_paint();document.querySelectorAll('.dt-pos [data-close]').forEach(b=>{if(openDet.has(b.dataset.close)){const d=b.parentElement.querySelector('details');if(d)d.open=true;}});};
+setInterval(()=>{if(open_.length)paint();},1000);
 // ---- start: ?iid= in the address, else the last symbol viewed
 let saved=null;try{saved=JSON.parse(localStorage.getItem('dt-cur')||'null');}catch(e){}
 const want=new URLSearchParams(location.search).get('iid');
-if(!want&&pos&&(!saved||saved.instrumentId!==pos.iid))saved={instrumentId:pos.iid,symbol:pos.symbol,name:pos.name};
+if(!want&&!saved&&open_.length)saved={instrumentId:open_[0].iid,symbol:open_[0].symbol,name:open_[0].name};
 if(saved&&(!want||String(saved.instrumentId)===want))pick(saved);
 else if(want)pick({instrumentId:+want,symbol:'#'+want,name:''});
 })();
@@ -1260,8 +1294,8 @@ else if(want)pick({instrumentId:+want,symbol:'#'+want,name:''});
 @app.get("/daytrader", response_class=HTMLResponse)
 def daytrader_page():
     search = card("Day trader (test)",
-                  "<p class=muted>Pick any eToro instrument to watch a live 30-minute candle chart, and try a theoretical $100 "
-                  "paper trade beside it. Nothing is ever sent to eToro from this page. eToro's smallest candle is 1 minute, "
+                  "<p class=muted>Pick any eToro instrument to watch a live 30-minute candle chart, and try theoretical $100 paper "
+                  "trades beside it, as many at once as you like. Nothing is ever sent to eToro from this page. eToro's smallest candle is 1 minute, "
                   "so the chart starts with 1-minute candles (paler) and 30-second candles, built from the live price sampled "
                   "every 5 seconds, take over while the page is open. It updates every 30 seconds.</p>"
                   "<div class=dt-search><label>Symbol or name</label>"
@@ -1300,6 +1334,15 @@ def daytrader_search(q: str = ""):
         return daytrader.search(q)
     except Exception as e:  # noqa: BLE001
         raise HTTPException(502, f"eToro search failed: {str(e)[:200]}")
+
+
+@app.get("/daytrader/quotes")
+def daytrader_quotes(ids: str = ""):
+    try:
+        wanted = [int(x) for x in ids.split(",") if x.strip().isdigit()]
+        return {str(k): v for k, v in daytrader.quotes(wanted).items()}
+    except Exception as e:  # noqa: BLE001
+        raise HTTPException(502, f"eToro prices failed: {str(e)[:200]}")
 
 
 @app.get("/daytrader/quote/{iid}")

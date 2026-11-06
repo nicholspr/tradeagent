@@ -1734,3 +1734,28 @@ def test_daytrader_quote_uses_sampled_price(monkeypatch):
     dt._watch[42]["quote"]["ts"] = _t.time() - 3600         # an hour-old price means the market is closed
     assert dt.quote(42)["open"] is False
     dt._watch.pop(42, None)
+
+
+def test_rates_prefer_fresher_v2_price():
+    from app import etoro
+
+    class S:
+        def __init__(self, v2):
+            self.v2 = v2
+
+        def request(self, method, url, params=None, json=None, headers=None, timeout=None):
+            if "/api/v1/market-data/instruments/rates" in url:
+                return Resp(200, {"rates": [
+                    {"instrumentID": 1, "bid": 90.36, "ask": 90.38, "date": "2026-11-06T15:32:58.6Z", "conversionRateBid": 1.3},
+                    {"instrumentID": 2, "bid": 10.0, "ask": 10.1, "date": "2026-11-06T21:45:00Z", "conversionRateBid": 1}]})
+            if "/api/v2/market-data/rates" in url:
+                return self.v2
+            return Resp(404, {})
+
+    v2 = Resp(200, {"results": [{"instrumentId": 1, "bid": 89.95, "ask": 89.96, "date": "2026-11-06T21:45:34.287"},
+                                {"instrumentId": 2, "bid": 9.0, "ask": 9.1, "date": "2026-11-06T20:00:00"}]})
+    r = etoro.EtoroClient("k", "u", env="real", base="https://x", session=S(v2)).rates([1, 2])
+    assert r[1]["bid"] == 89.95 and r[1]["ask"] == 89.96 and r[1]["conversionRateBid"] == 1.3   # stale v1 replaced, FX kept
+    assert r[2]["bid"] == 10.0                                                                  # v1 newer, kept
+    r = etoro.EtoroClient("k", "u", env="real", base="https://x", session=S(Resp(500, {}))).rates([1])
+    assert r[1]["bid"] == 90.36                                                                 # v2 down: v1 still works

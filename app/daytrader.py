@@ -79,7 +79,11 @@ def _sample_once() -> None:
         ids = list(_watch)
     if not ids:
         return
-    rates = engine.client().rates(ids)
+    ec = engine.client()
+    try:
+        rates = ec.live_rates(ids)
+    except Exception:  # noqa: BLE001
+        rates = ec.rates(ids)
     with _lock:
         for iid in ids:
             r, w = rates.get(iid), _watch.get(iid)
@@ -149,20 +153,41 @@ def _name(iid: int) -> tuple[str, str, str]:
     return (f"#{iid}", "", "other")
 
 
-def quote(iid: int) -> dict:
-    """Latest bid/ask for the paper trade panel: the sampler's last price (no extra eToro call),
-    or a fresh rate if the sampler has none yet."""
-    watch(iid)
+def quotes(ids: list[int]) -> dict[int, dict]:
+    """Latest bid/ask for each instrument: the sampler's last price (no extra eToro call),
+    with one fresh rates call for any the sampler has not priced yet."""
+    ids = sorted({int(i) for i in ids})[:20]
+    for iid in ids:
+        watch(iid)
+    out = {}
     with _lock:
-        q = dict(_watch[iid]["quote"]) if _watch.get(iid, {}).get("quote") else None
-    if q is None:
-        r = engine.client().rates([iid]).get(iid)
-        if not r or r.get("bid") is None:
-            raise ValueError("no price available")
-        q = {"bid": float(r["bid"]), "ask": float(r.get("ask") or r["bid"]),
-             "ts": _parse_ts(r.get("date", "")) or time.time()}
-    q["open"] = time.time() - q["ts"] <= STALE_AFTER
-    q["instrumentId"] = iid
+        for iid in ids:
+            q = _watch.get(iid, {}).get("quote")
+            if q:
+                out[iid] = dict(q)
+    missing = [i for i in ids if i not in out]
+    if missing:
+        ec = engine.client()
+        try:
+            rates = ec.live_rates(missing)
+        except Exception:  # noqa: BLE001
+            rates = ec.rates(missing)
+        for iid in missing:
+            r = rates.get(iid)
+            if r and r.get("bid") is not None:
+                out[iid] = {"bid": float(r["bid"]), "ask": float(r.get("ask") or r["bid"]),
+                            "ts": _parse_ts(r.get("date", "")) or time.time()}
+    now = time.time()
+    for iid, q in out.items():
+        q["open"] = now - q["ts"] <= STALE_AFTER
+        q["instrumentId"] = iid
+    return out
+
+
+def quote(iid: int) -> dict:
+    q = quotes([iid]).get(int(iid))
+    if not q:
+        raise ValueError("no price available")
     return q
 
 
@@ -176,10 +201,7 @@ def chart(iid: int) -> dict:
         buckets = {k: list(v) for k, v in w["buckets"].items()}
         quote = dict(w["quote"]) if w["quote"] else None
     if quote is None:                       # first view: quote straight away rather than wait for the sampler
-        r = ec.rates([iid]).get(iid)
-        if r and r.get("bid") is not None:
-            quote = {"bid": float(r["bid"]), "ask": float(r.get("ask") or r["bid"]),
-                     "ts": _parse_ts(r.get("date", "")) or time.time()}
+        quote = quotes([iid]).get(iid)
     now = time.time()
     is_open = bool(quote and now - quote["ts"] <= STALE_AFTER)
     last_hist = _parse_ts(history[-1]["date"]) + 60 if history else now

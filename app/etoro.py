@@ -152,12 +152,34 @@ class EtoroClient:
                     continue
         return sorted(out, key=lambda c: c["date"])
 
+    def live_rates(self, instrument_ids: list[int]) -> dict[int, dict]:
+        """Current bid/ask from the v2 rates endpoint: {iid: {bid, ask, date, quoteType}}.
+        The v1 endpoint can return crypto prices hours old; v2 is realtime."""
+        if not instrument_ids:
+            return {}
+        data = self._req("GET", "/api/v2/market-data/rates",
+                         params={"instrumentIds": ",".join(str(i) for i in sorted(set(instrument_ids)))})
+        return {int(r["instrumentId"]): r for r in data.get("results", []) if r.get("instrumentId") is not None}
+
     def rates(self, instrument_ids: list[int]) -> dict[int, dict]:
+        """v1 rates (which carry the currency conversion rates), with bid/ask/date replaced by the
+        v2 price wherever v2's is newer. Seen on 6 Nov 2026: v1 gave SOL and BTC prices hours stale."""
         if not instrument_ids:
             return {}
         data = self._req("GET", "/api/v1/market-data/instruments/rates",
                          params={"instrumentIds": ",".join(str(i) for i in sorted(set(instrument_ids)))})
-        return {int(r["instrumentID"]): r for r in data.get("rates", [])}
+        out = {int(r["instrumentID"]): r for r in data.get("rates", [])}
+        try:
+            live = self.live_rates(instrument_ids)
+        except EtoroError:
+            return out
+        for iid, lv in live.items():
+            if lv.get("bid") is None:
+                continue
+            r = out.setdefault(iid, {"instrumentID": iid})
+            if str(lv.get("date") or "")[:19] > str(r.get("date") or "")[:19]:
+                r.update(bid=lv["bid"], ask=lv.get("ask") or lv["bid"], lastExecution=lv["bid"], date=lv["date"])
+        return out
 
     def symbol_for(self, instrument_id: int) -> str:
         if instrument_id in self._symbols:

@@ -239,7 +239,7 @@ A first step towards intraday tools. Search for any eToro instrument by symbol o
 - eToro's smallest candle is 1 minute, so the app builds **30-second candles** itself by sampling the live bid every 5 seconds while the page is open. The chart starts with the last 30 minutes of 1-minute candles (drawn paler), and the live 30-second candles replace them as they form.
 - The card shows the bid, ask and spread, the change over the 30 minutes, and **Live** or **Market closed** (with the time of the last price). Hover over or tap a candle to see its open, high, low and close.
 - Sampling stops by itself about two minutes after you close the page, so it uses no eToro quota when nobody is watching. The last symbol is remembered, and `/daytrader?iid=<instrument id>` opens one directly.
-- **Paper trade (theoretical $100).** Beside the chart, **Open $100 position** records a pretend buy at the current ask. While it is open, the panel updates every 5 seconds with the change in value, the spread paid and the net result if you closed now, and an amber line marks the entry on the chart. **Close position** sells at the bid and shows the final profit or loss after costs, line by line. Costs follow eToro's published fees: crypto 1% to buy and 1% to sell; shares a commission per side ($1 or $2 by country and exchange, set under *Cost assumptions*, default $1) plus 0.5% UK stamp duty on buys of `.L` shares; ETFs no commission; an optional currency conversion % per side (0 for a USD account trading USD assets). CFD overnight fees are not included. The open position and your last 10 results are kept in your browser, so they survive a refresh but aren't shared between devices.
+- **Paper trades (theoretical $100 each).** Beside the chart, **Open $100 position in <symbol>** records a pretend buy at the current ask. You can have **as many open as you like**, in any mix of symbols (and several in the same one). Each open position shows its live change in value, updated every 5 seconds, with a fold-out for units, value, spread paid, costs and the net if closed now; the panel totals the lot ("Total net if all closed now"). Tap a position's symbol to switch the chart to it; amber lines mark the entry prices on the chart. **Close** (per position) or **Close all** sells at the bid and shows the final profit or loss after costs, line by line. Costs follow eToro's published fees: crypto 1% to buy and 1% to sell; shares a commission per side ($1 or $2 by country and exchange, set under *Cost assumptions*, default $1) plus 0.5% UK stamp duty on buys of `.L` shares; ETFs no commission; an optional currency conversion % per side (0 for a USD account trading USD assets). CFD overnight fees are not included. Open positions and your last 20 closed trades are kept in your browser, so they survive a refresh but aren't shared between devices.
 - Nothing is ever sent to eToro from this page.
 
 ### Scorecard: does it work?
@@ -350,7 +350,7 @@ Removing an entry does not sell it; holdings stay until sold. London (`.L`) inst
 
 ```bash
 pip install -r requirements.txt
-python -m pytest -q tests          # 69 tests, all offline (fakes for eToro, Claude, email)
+python -m pytest -q tests          # 70 tests, all offline (fakes for eToro, Claude, email)
 DATA_DIR=./data uvicorn app.web:app --reload
 ```
 
@@ -363,6 +363,7 @@ On Windows, `run-local.bat` runs the full app at `http://localhost:8000/`. It al
 | `app/analyst.py` | Adapts the TradingAgents graph. Builds the portfolio context plus the account rules the agents see. |
 | `app/policy.py` | Watchlist parsing, rating → proposal, hard limits, approval rules, and the account-rules text. Pure functions, fully tested. |
 | `app/engine.py` | Analysis, proposals, approval, execution, the queue, scheduled runs, pre-flight, overrides, the daily summary, the audit trail and one-off fixes. |
+| `app/etoro.py` prices | `rates()` takes bid/ask from eToro's v2 rates endpoint whenever it is newer than v1 (v1 was seen returning crypto prices hours old); v1 still supplies the currency conversion rates. |
 | `app/daytrader.py` | Day trader test page: eToro instrument search, live price sampling and 30-second candles. |
 | `app/terms.py` | Holding period per symbol; the short-term agent note; stop-loss and take-profit extraction and sanity checks. |
 | `app/levels.py` | Watch levels: extraction, the overnight check, queue priority, agent notes and backfill. |
