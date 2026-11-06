@@ -1075,23 +1075,27 @@ border-radius:10px;max-height:340px;overflow:auto;display:none;box-shadow:0 8px 
 .dt-results b{min-width:84px}.dt-results span{color:var(--muted);font-size:12px}
 .dt-head{display:flex;flex-wrap:wrap;gap:6px 18px;align-items:baseline;margin-bottom:8px}
 .dt-head .dt-px{font-size:26px;font-weight:700}.dt-up{color:#22c55e}.dt-dn{color:#ef4444}
-#dt-chart{width:100%;height:440px;display:block;touch-action:none}
+#dt-chart{width:100%;height:220px;display:block;touch-action:none}
 #dt-chart text{fill:var(--muted);font-size:11px}
-.dt-chartcard{grid-column:span 8}.dt-paper{grid-column:span 4}
-@media(max-width:1100px){.dt-chartcard,.dt-paper{grid-column:span 12}}
+.dt-chartcard{grid-column:span 12}.dt-paper{grid-column:span 8}.dt-side{grid-column:span 4}
+@media(max-width:1100px){.dt-paper,.dt-side{grid-column:span 12}}
+.dt-pchart{width:100%;height:220px;display:block;margin:6px 0}.dt-pchart text{fill:var(--muted);font-size:11px}
+.dt-stats{display:grid;grid-template-columns:repeat(auto-fit,minmax(110px,1fr));gap:6px 14px;font-size:12px;align-items:end}
+.dt-stats div span{display:block;color:var(--muted)}.dt-stats div b{font-variant-numeric:tabular-nums;font-size:13px}
+.dt-key{display:flex;flex-wrap:wrap;gap:4px 14px;font-size:12px;color:var(--muted);margin-bottom:8px}.dt-key i{display:inline-block;width:18px;border-top:2px dashed;vertical-align:middle;margin-right:5px}
 .dt-kv{display:grid;grid-template-columns:auto 1fr;gap:4px 12px;font-size:13px;margin:10px 0}
 .dt-kv>span:nth-child(odd){color:var(--muted)}.dt-kv>span:nth-child(even){text-align:right;font-variant-numeric:tabular-nums}.dt-kv>span.tot{color:var(--text)}
 .dt-big{font-size:28px;font-weight:700;font-variant-numeric:tabular-nums}
 .dt-kv .tot{font-weight:700;border-top:1px solid var(--line);padding-top:6px}
-.dt-paper button{width:100%;margin-top:6px}.dt-paper button.close{background:#b91c1c}.dt-paper button.close:hover{background:#991b1b}
+.dt-paper button.close{background:#b91c1c}.dt-paper button.close:hover{background:#991b1b}#dt-openbtn{margin-left:auto}
 .dt-pos{border:1px solid var(--line);border-radius:10px;padding:10px;margin-bottom:8px}
 .dt-prow{display:flex;flex-wrap:wrap;gap:4px 10px;align-items:baseline}.dt-prow a{color:var(--text);text-decoration:none}
 .dt-pl{margin-left:auto;font-weight:700;font-size:17px;font-variant-numeric:tabular-nums}.dt-pl small{font-size:12px;font-weight:600}
 .dt-pos details{margin-top:6px}.dt-pos summary{font-weight:500;font-size:12px}
-.dt-paper button.sm{width:auto;min-height:30px;padding:5px 14px;margin-top:8px;font-size:13px}
+.dt-paper button.sm{min-height:30px;padding:5px 14px;font-size:13px}
 .dt-last{margin-top:16px;padding-top:12px;border-top:1px solid var(--line)}
 .dt-set{display:grid;grid-template-columns:1fr 1fr;gap:8px;margin-top:10px}
-@media(max-width:700px){#dt-chart{height:320px}}
+@media(max-width:700px){#dt-chart,.dt-pchart{height:200px}}
 """
 
 DT_JS = """
@@ -1123,7 +1127,7 @@ document.addEventListener('click',e=>{if(!e.target.closest('.dt-search'))res.sty
 function pick(it){cur=it;res.style.display='none';box.value='';
   try{localStorage.setItem('dt-cur',JSON.stringify(it));}catch(e){}
   history.replaceState(null,'','?iid='+it.instrumentId);
-  $('dt-card').style.display='';$('dt-paper').style.display='';$('dt-sym').textContent=it.symbol;$('dt-name').textContent=it.name;
+  $('dt-card').style.display='';$('dt-sym').textContent=it.symbol;$('dt-name').textContent=it.name;
   data=null;draw();load();if(typeof poll==='function'){paint();poll();}}
 // ---- data
 function load(){if(!cur)return;clearTimeout(timer);$('dt-status').textContent='Updating…';
@@ -1133,7 +1137,44 @@ function load(){if(!cur)return;clearTimeout(timer);$('dt-status').textContent='U
   .finally(()=>{next=Date.now()+30000;timer=setTimeout(load,30000);});}
 setInterval(()=>{if(cur&&next){const s=Math.max(0,Math.round((next-Date.now())/1000));$('dt-next').textContent='next update in '+s+'s';}},1000);
 // ---- chart
-function draw(){const svg=$('dt-chart'),W=svg.clientWidth||800,H=svg.clientHeight||400;
+const C_LAST='#3b82f6',C_BUY='#f59e0b',C_TGT='#c084fc';
+// One SVG chart: candles over [t0,t1], plus horizontal dashed lines. The price scale always
+// stretches to include every line, so buy and target levels are never off the chart.
+function render(W,H,cs,o){
+  const L=8,R=74,T=10,Bm=24,pw=W-L-R,ph=H-T-Bm,t0=o.t0,t1=o.t1,lines=o.lines||[];
+  if(!cs.length&&!lines.length)return '<text x=\"12\" y=\"24\">No price data in the last 30 minutes.</text>';
+  let lo=Infinity,hi=-Infinity;cs.forEach(c=>{lo=Math.min(lo,c.l);hi=Math.max(hi,c.h);});
+  lines.forEach(l=>{lo=Math.min(lo,l.v);hi=Math.max(hi,l.v);});
+  const pad=(hi-lo)*0.08||hi*0.001||1;lo-=pad;hi+=pad;
+  const X=t=>L+(t-t0)/(t1-t0)*pw,Y=v=>T+(hi-v)/(hi-lo)*ph;let g='';
+  // price tags on the right, nudged apart so they never sit on top of each other
+  const tags=lines.map(l=>({l,y:Y(l.v)})).sort((a,b)=>a.y-b.y);
+  for(let k=1;k<tags.length;k++)if(tags[k].y-tags[k-1].y<19)tags[k].y=tags[k-1].y+19;
+  const over=tags.length?tags[tags.length-1].y-(T+ph-9):0;if(over>0)tags.forEach(t=>t.y-=over);
+  const step=nice((hi-lo)/(H<260?4:5));for(let v=Math.ceil(lo/step)*step;v<=hi;v+=step){const y=Y(v);
+    g+='<line x1=\"'+L+'\" x2=\"'+(L+pw)+'\" y1=\"'+y+'\" y2=\"'+y+'\" stroke=\"#262c37\"/>'
+     +(tags.some(t=>Math.abs(t.y-y)<14)?'':'<text x=\"'+(L+pw+6)+'\" y=\"'+(y+4)+'\">'+fmt(v)+'</text>');}
+  const xs=pw<520?600:300;for(let t=Math.ceil(t0/xs)*xs;t<=t1;t+=xs){const x=X(t);
+    g+='<line x1=\"'+x+'\" x2=\"'+x+'\" y1=\"'+T+'\" y2=\"'+(T+ph)+'\" stroke=\"#1f242e\"/>'
+     +(x-L<18||L+pw-x<18?'':'<text x=\"'+x+'\" y=\"'+(H-7)+'\" text-anchor=\"middle\">'+hm(t)+'</text>');}
+  cs.forEach(c=>{const col=c.c>=c.o?'#22c55e':'#ef4444',x0=X(Math.max(c.t,t0)),x1=X(c.t+c.d),
+    w=Math.max(1,(x1-x0)*0.7),cx=(x0+x1)/2,yo=Y(c.o),yc=Y(c.c);
+    g+='<line x1=\"'+cx+'\" x2=\"'+cx+'\" y1=\"'+Y(c.h)+'\" y2=\"'+Y(c.l)+'\" stroke=\"'+col+'\"/>'
+     +'<rect x=\"'+(cx-w/2)+'\" y=\"'+Math.min(yo,yc)+'\" width=\"'+w+'\" height=\"'+Math.max(1,Math.abs(yc-yo))+'\" fill=\"'+col+'\"'
+     +(c.d>o.bucket?' fill-opacity=\"0.55\"':'')+'/>';});
+  tags.forEach(({l,y})=>{const ly=Y(l.v);
+    g+='<line x1=\"'+L+'\" x2=\"'+(L+pw)+'\" y1=\"'+ly+'\" y2=\"'+ly+'\" stroke=\"'+l.c+'\" stroke-dasharray=\"'+(l.dash||'6 4')+'\"/>'
+     +(l.label?'<text x=\"'+(L+6)+'\" y=\"'+(ly-5)+'\" style=\"fill:'+l.c+'\">'+l.label+'</text>':'')
+     +'<rect x=\"'+(L+pw+2)+'\" y=\"'+(y-9)+'\" width=\"'+(R-4)+'\" height=\"18\" rx=\"4\" fill=\"'+l.c+'\"/>'
+     +'<text x=\"'+(L+pw+6)+'\" y=\"'+(y+4)+'\" style=\"fill:#0b0e13;font-weight:600\">'+fmt(l.v)+'</text>';});
+  if(o.hoverX!=null)g+='<line x1=\"'+X(o.hoverX)+'\" x2=\"'+X(o.hoverX)+'\" y1=\"'+T+'\" y2=\"'+(T+ph)+'\" stroke=\"#8b93a3\" stroke-dasharray=\"2 3\"/>';
+  return g;}
+// lines for one paper position: its buy price and the break-even target
+function posLines(p,many){const tag=many?' ('+hm(p.t)+')':'',be=breakEven(p);
+  return [{v:p.ask,c:C_BUY,label:'Paper buy '+fmt(p.ask)+tag},{v:be,c:C_TGT,label:'Target (covers fees) '+fmt(be)+tag}];}
+function lastLine(d,q){const cs=d.candles;const v=q&&(d.open||!cs.length)?q.bid:(cs.length?cs[cs.length-1].c:null);
+  return v==null?[]:[{v,c:C_LAST,dash:'4 3'}];}
+function draw(){const svg=$('dt-chart'),W=svg.clientWidth||800,H=svg.clientHeight||220;
   svg.setAttribute('viewBox','0 0 '+W+' '+H);
   if(!data){svg.innerHTML='<text x=\"12\" y=\"24\">Loading…</text>';return;}
   const q=data.quote,cs=data.candles;
@@ -1148,42 +1189,16 @@ function draw(){const svg=$('dt-chart'),W=svg.clientWidth||800,H=svg.clientHeigh
   if(cs.length&&q){const a=cs[0].o,b=data.open?q.bid:cs[cs.length-1].c,p=(b-a)/a*100;
     ch.textContent=(p>=0?'+':'')+fmt(b-a)+' ('+(p>=0?'+':'')+p.toFixed(2)+'%) over 30 min';ch.className=p>=0?'dt-up':'dt-dn';}
   else ch.textContent='';
-  if(!cs.length){svg.innerHTML='<text x=\"12\" y=\"24\">No price data in the last 30 minutes.</text>';return;}
-  const L=8,R=70,T=10,Bm=26,pw=W-L-R,ph=H-T-Bm,t1=data.end,t0=t1-data.window;
-  let lo=Math.min(...cs.map(c=>c.l)),hi=Math.max(...cs.map(c=>c.h));
-  if(q&&data.open){lo=Math.min(lo,q.bid);hi=Math.max(hi,q.bid);}
-  const pad=(hi-lo)*0.08||hi*0.001||1;lo-=pad;hi+=pad;
-  const X=t=>L+(t-t0)/(t1-t0)*pw,Y=v=>T+(hi-v)/(hi-lo)*ph;
-  let g='';
-  // y grid
-  const step=nice((hi-lo)/5);for(let v=Math.ceil(lo/step)*step;v<=hi;v+=step){const y=Y(v);
-    g+='<line x1=\"'+L+'\" x2=\"'+(L+pw)+'\" y1=\"'+y+'\" y2=\"'+y+'\" stroke=\"#262c37\"/>'
-     +'<text x=\"'+(L+pw+6)+'\" y=\"'+(y+4)+'\">'+fmt(v)+'</text>';}
-  // x grid every 5 minutes
-  const xs=pw<520?600:300;for(let t=Math.ceil(t0/xs)*xs;t<=t1;t+=xs){const x=X(t);
-    g+='<line x1=\"'+x+'\" x2=\"'+x+'\" y1=\"'+T+'\" y2=\"'+(T+ph)+'\" stroke=\"#1f242e\"/>'
-     +(x-L<18||L+pw-x<18?'':'<text x=\"'+x+'\" y=\"'+(H-8)+'\" text-anchor=\"middle\">'+hm(t)+'</text>');}
-  // candles
-  cs.forEach((c,i)=>{const up=c.c>=c.o,col=up?'#22c55e':'#ef4444',x0=X(Math.max(c.t,t0)),x1=X(c.t+c.d),
-    w=Math.max(1,(x1-x0)*0.7),cx=(x0+x1)/2,yo=Y(c.o),yc=Y(c.c);
-    g+='<line x1=\"'+cx+'\" x2=\"'+cx+'\" y1=\"'+Y(c.h)+'\" y2=\"'+Y(c.l)+'\" stroke=\"'+col+'\"/>'
-     +'<rect x=\"'+(cx-w/2)+'\" y=\"'+Math.min(yo,yc)+'\" width=\"'+w+'\" height=\"'+Math.max(1,Math.abs(yc-yo))+'\" fill=\"'+col+'\"'
-     +(c.d>data.bucket?' fill-opacity=\"0.55\"':'')+'/>';});
-  // last price line
-  if(q){const y=Y(data.open?q.bid:cs[cs.length-1].c);
-    g+='<line x1=\"'+L+'\" x2=\"'+(L+pw)+'\" y1=\"'+y+'\" y2=\"'+y+'\" stroke=\"#3b82f6\" stroke-dasharray=\"4 3\"/>'
-     +'<rect x=\"'+(L+pw+2)+'\" y=\"'+(y-9)+'\" width=\"'+(R-4)+'\" height=\"18\" rx=\"4\" fill=\"#3b82f6\"/>'
-     +'<text x=\"'+(L+pw+6)+'\" y=\"'+(y+4)+'\" style=\"fill:#fff\">'+fmt(data.open?q.bid:cs[cs.length-1].c)+'</text>';}
-  if(typeof open_!=='undefined')open_.filter(p=>p.iid===data.instrumentId&&p.ask>=lo&&p.ask<=hi).forEach(p=>{const y=Y(p.ask);
-    g+='<line x1=\"'+L+'\" x2=\"'+(L+pw)+'\" y1=\"'+y+'\" y2=\"'+y+'\" stroke=\"#f59e0b\" stroke-dasharray=\"6 4\"/>'
-     +'<text x=\"'+(L+6)+'\" y=\"'+(y-5)+'\" style=\"fill:#f59e0b\">Paper buy '+fmt(p.ask)+' ('+hm(p.t)+')</text>';});
-  if(hover!=null){const c=cs.find(c=>hover>=c.t&&hover<c.t+c.d);
-    if(c){const x=X(c.t+c.d/2);g+='<line x1=\"'+x+'\" x2=\"'+x+'\" y1=\"'+T+'\" y2=\"'+(T+ph)+'\" stroke=\"#8b93a3\" stroke-dasharray=\"2 3\"/>';
-      $('dt-ohlc').textContent=hms(c.t)+' ('+(c.d===60?'1 min':'30 s')+')  O '+fmt(c.o)+'  H '+fmt(c.h)+'  L '+fmt(c.l)+'  C '+fmt(c.c);}}
-  else $('dt-ohlc').textContent='Hover or tap a candle for its prices';
-  svg.innerHTML=g;
+  const mine=typeof open_!=='undefined'?open_.filter(p=>p.iid===data.instrumentId):[];
+  const lines=lastLine(data,q).concat(...mine.map(p=>posLines(p,mine.length>1)));
+  const t1=data.end,t0=t1-data.window,L=8,pw=W-8-74;
+  let hx=null;if(hover!=null){const c=cs.find(c=>hover>=c.t&&hover<c.t+c.d);
+    if(c){hx=c.t+c.d/2;$('dt-ohlc').textContent=hms(c.t)+' ('+(c.d===60?'1 min':'30 s')+')  O '+fmt(c.o)+'  H '+fmt(c.h)+'  L '+fmt(c.l)+'  C '+fmt(c.c);}}
+  if(hx==null)$('dt-ohlc').textContent='Hover or tap a candle for its prices';
+  svg.innerHTML=render(W,H,cs,{t0,t1,bucket:data.bucket,lines,hoverX:hx});
   svg.onpointermove=e=>{const r=svg.getBoundingClientRect(),x=(e.clientX-r.left)*(W/r.width);hover=t0+(x-L)/pw*(t1-t0);draw();};
-  svg.onpointerleave=()=>{hover=null;draw();};}
+  svg.onpointerleave=()=>{hover=null;draw();};
+  if(typeof posData!=='undefined')posData[data.instrumentId]=data;}
 function nice(x){const p=Math.pow(10,Math.floor(Math.log10(x))),f=x/p;return (f<1.5?1:f<3?2:f<7?5:10)*p;}
 addEventListener('resize',draw);
 
@@ -1209,6 +1224,15 @@ function costs(p,bid){const units=p.amt/p.ask,value=units*bid,lines=[];
   if(p.fx>0){lines.push(['Currency conversion (in)',p.amt*p.fx/100]);lines.push(['Currency conversion (out)',value*p.fx/100]);}
   const fees=lines.reduce((a,l)=>a+l[1],0),gross=value-p.amt;
   return {units,value,gross,lines,fees,net:gross-fees,spread:units*(p.ask-p.bid0)};}
+// bid price at which closing gives exactly $0 after every fee (the chart's target line)
+function breakEven(p){const units=p.amt/p.ask,r=(p.kind==='crypto'?0.01:0)+(p.fx||0)/100;
+  let fixed=0;if(p.kind==='crypto')fixed+=p.amt*0.01;if(p.kind==='stock'&&p.comm>0)fixed+=2*p.comm;
+  if(p.kind==='stock'&&/\\.L$/i.test(p.symbol))fixed+=Math.ceil(p.amt*0.5)/100;if(p.fx>0)fixed+=p.amt*p.fx/100;
+  return (p.amt+fixed)/(1-r)/units;}
+var posData={},ctimer=null;
+function loadPosCharts(){clearTimeout(ctimer);const ids=[...new Set(open_.map(p=>p.iid))];
+  Promise.all(ids.map(iid=>(data&&data.instrumentId===iid?Promise.resolve(data):fetch(B+'/daytrader/candles/'+iid).then(r=>r.ok?r.json():null).catch(()=>null))
+    .then(d=>{if(d)posData[iid]=d;}))).then(()=>paint()).finally(()=>{if(open_.length)ctimer=setTimeout(loadPosCharts,30000);});}
 const getQ=ids=>fetch(B+'/daytrader/quotes?ids='+ids.join(',')).then(r=>{if(!r.ok)throw 0;return r.json();});
 function poll(){clearTimeout(ptimer);const ids=[...new Set(open_.map(p=>p.iid).concat(cur?[cur.instrumentId]:[]))];
   if(!ids.length)return;
@@ -1219,7 +1243,7 @@ function openPos(){if(!cur||busy)return;busy=true;paint();
     if(!q.open&&!confirm('The market looks closed, so this price is stale. Open anyway?'))return;
     open_.push({id:'p'+Date.now()+Math.random().toString(36).slice(2,6),iid:cur.instrumentId,symbol:cur.symbol,name:cur.name||'',
       kind:(data&&data.instrumentId===cur.instrumentId&&data.kind)||kindOf(cur.type),amt:AMT,ask:q.ask,bid0:q.bid,t:Date.now()/1000,comm:cfg.comm,fx:cfg.fx});
-    sv('dt-open',open_);last=null;draw();poll();})
+    sv('dt-open',open_);last=null;draw();poll();loadPosCharts();})
   .catch(()=>alert('Could not get a price from eToro, try again.')).finally(()=>{busy=false;paint();});}
 function closePos(id){const p=open_.find(x=>x.id===id);if(!p||busy)return;busy=true;paint();
   getQ([p.iid]).then(d=>{const q=d[p.iid];if(!q)throw 0;qs[p.iid]=q;const c=costs(p,q.bid);
@@ -1236,51 +1260,61 @@ function closeAll(){if(!open_.length||busy)return;if(!confirm('Close all '+open_
 function kindOf(t){t=(t||'').toLowerCase();return t.startsWith('crypto')?'crypto':t==='etf'?'etf':t.startsWith('stock')?'stock':'other';}
 const KN={crypto:'Crypto',stock:'Share',etf:'ETF',other:'CFD/other'};
 function kv(rows){return '<div class=dt-kv>'+rows.map(r=>'<span'+(r[2]?' class=\"'+r[2]+'\"':'')+'>'+r[0]+'</span><span'+(r[2]?' class=\"'+r[2]+'\"':'')+'>'+r[1]+'</span>').join('')+'</div>';}
-function paint(){const el=$('dt-pbody');if(!el)return;let h='';const now=Date.now()/1000;
-  // open a new one
-  if(cur){const q=qs[cur.instrumentId],n=open_.filter(p=>p.iid===cur.instrumentId).length;
-    h+='<p class=muted>Open a theoretical $'+AMT+' buy of <b>'+cur.symbol+'</b>'+(q?' at the ask, '+fmt(q.ask):'')+'. Nothing is sent to eToro.'
-      +(n?' You already have '+n+' open in '+cur.symbol+'.':'')+'</p>'
-      +'<button class=open id=dt-openbtn'+(busy?' disabled':'')+'>Open $'+AMT+' position in '+cur.symbol+'</button>';}
-  // open positions
-  if(open_.length){let tg=0,tn=0;
-    const rows=open_.map(p=>{const q=qs[p.iid];if(!q)return '<div class=dt-pos><b>'+p.symbol+'</b> <span class=muted>getting the price…</span></div>';
-      const c=costs(p,q.bid);tg+=c.gross;tn+=c.net;
+function paint(){const el=$('dt-pbody');if(!el)return;const now=Date.now()/1000;
+  const ob=$('dt-openbtn');
+  if(ob&&cur){const n=open_.filter(p=>p.iid===cur.instrumentId).length;ob.disabled=busy;
+    ob.textContent='Open $'+AMT+' paper buy of '+cur.symbol;ob.title=n?n+' already open in '+cur.symbol:'Nothing is sent to eToro';ob.onclick=openPos;}
+  let h='';
+  if(!open_.length)h='<p class=muted>No open paper trades. Pick a symbol and press <b>Open $'+AMT+' paper buy</b> above. Nothing is ever sent to eToro.</p>';
+  else{let tg=0,tn=0;
+    h+='<div class=dt-key><span><i style=\"color:'+C_BUY+'\"></i>Paper buy</span><span><i style=\"color:'+C_TGT+'\"></i>Target: break-even after fees</span><span><i style=\"color:'+C_LAST+'\"></i>Current price</span></div>';
+    h+=open_.map(p=>{const q=qs[p.iid];const c=q?costs(p,q.bid):null;if(c){tg+=c.gross;tn+=c.net;}
+      const be=breakEven(p),togo=q?(be-q.bid)/q.bid*100:null;
       return '<div class=dt-pos'+(cur&&cur.instrumentId===p.iid?' style=\"border-color:#f59e0b55\"':'')+'>'
-        +'<div class=dt-prow><a href=\"#\" data-show=\"'+p.iid+'\"><b>'+p.symbol+'</b></a><span class=muted>'+KN[p.kind]+' · '+hms(p.t)+' · '+dur(now-p.t)+(q.open?'':' · closed')+'</span>'
-        +'<span class=\"dt-pl '+cls(c.gross)+'\">'+sgn(c.gross)+' <small>'+pc(c.gross,p.amt)+'</small></span></div>'
-        +'<details><summary>Bought '+fmt(p.ask)+' · now '+fmt(q.bid)+' · net if closed <b class=\"'+cls(c.net)+'\">'+sgn(c.net)+'</b></summary>'
-        +kv([['Units',c.units.toPrecision(6)],['Value now',money(c.value)],['Spread paid on entry',money(c.spread)],['Costs if closed now',money(c.fees)]])+'</details>'
-        +'<button class=\"close sm\" data-close=\"'+p.id+'\"'+(busy?' disabled':'')+'>Close</button></div>';}).join('');
-    h+='<h3 style=\"margin-top:16px\">Open positions ('+open_.length+')</h3>'+rows
-      +kv([['Total invested',money(open_.length*AMT)],['Total change in value','<span class=\"'+cls(tg)+'\">'+sgn(tg)+'</span>'],
+        +'<div class=dt-prow><a href=\"#\" data-show=\"'+p.iid+'\"><b>'+p.symbol+'</b></a><span class=muted>'+KN[p.kind]+' · opened '+hms(p.t)+' · '+dur(now-p.t)+(q&&!q.open?' · market closed':'')+'</span>'
+        +(c?'<span class=\"dt-pl '+cls(c.gross)+'\">'+sgn(c.gross)+' <small>'+pc(c.gross,p.amt)+'</small></span>':'<span class=dt-pl>…</span>')+'</div>'
+        +'<svg class=dt-pchart data-chart=\"'+p.id+'\"></svg>'
+        +'<div class=dt-stats><div><span>Bought (ask)</span><b>'+fmt(p.ask)+'</b></div><div><span>Now (bid)</span><b>'+(q?fmt(q.bid):'–')+'</b></div>'
+        +'<div><span>Target</span><b style=\"color:'+C_TGT+'\">'+fmt(be)+'</b></div>'
+        +'<div><span>To target</span><b>'+(togo==null?'–':togo<=0?'<span class=dt-up>reached</span>':'+'+togo.toFixed(2)+'%')+'</b></div>'
+        +'<div><span>Costs if closed</span><b>'+(c?money(c.fees):'–')+'</b></div>'
+        +'<div><span>Net if closed</span><b class=\"'+(c?cls(c.net):'')+'\">'+(c?sgn(c.net):'–')+'</b></div>'
+        +'<div><button class=\"close sm\" data-close=\"'+p.id+'\"'+(busy?' disabled':'')+'>Close</button></div></div></div>';}).join('');
+    h+=kv([['Open positions',open_.length+' · '+money(open_.length*AMT)+' invested'],['Total change in value','<span class=\"'+cls(tg)+'\">'+sgn(tg)+'</span>'],
            ['Total net if all closed now','<b class=\"'+cls(tn)+'\">'+sgn(tn)+'</b>','tot']])
       +(open_.length>1?'<button class=\"sec\" id=dt-closeall'+(busy?' disabled':'')+'>Close all</button>':'');}
-  // last closed breakdown
-  if(last){h+='<div class=dt-last><p><b>Closed '+last.symbol+'</b> <span class=muted>held '+dur(last.tc-last.t)+'</span> <a href=\"#\" id=dt-dismiss style=\"float:right\">dismiss</a></p>'
+  el.innerHTML=h;
+  // a chart per open position: its own candles, buy, target and current price
+  el.querySelectorAll('svg[data-chart]').forEach(svg=>{const p=open_.find(x=>x.id===svg.dataset.chart);if(!p)return;
+    const d=posData[p.iid]||(data&&data.instrumentId===p.iid?data:null),W=svg.clientWidth||600,H=svg.clientHeight||220;
+    svg.setAttribute('viewBox','0 0 '+W+' '+H);
+    if(!d){svg.innerHTML='<text x=\"12\" y=\"24\">Loading chart…</text>';return;}
+    const q=qs[p.iid]||d.quote,lines=lastLine(d,q).concat(posLines(p,false)),t1=Math.max(d.end,q&&d.open?q.ts:0);
+    svg.innerHTML=render(W,H,d.candles,{t0:t1-d.window,t1,bucket:d.bucket,lines});});
+  const ca=$('dt-closeall');if(ca)ca.onclick=closeAll;
+  el.querySelectorAll('[data-close]').forEach(b=>b.onclick=()=>closePos(b.dataset.close));
+  el.querySelectorAll('[data-show]').forEach(a=>a.onclick=e=>{e.preventDefault();const p=open_.find(x=>String(x.iid)===a.dataset.show);
+    if(p&&(!cur||cur.instrumentId!==p.iid))pick({instrumentId:p.iid,symbol:p.symbol,name:p.name});scrollTo({top:0,behavior:'smooth'});});
+  // right-hand column: last closed trade and the history
+  let sh='';
+  if(last){sh+='<div class=dt-lastc><p><b>Closed '+last.symbol+'</b> <span class=muted>held '+dur(last.tc-last.t)+'</span> <a href=\"#\" id=dt-dismiss style=\"float:right\">dismiss</a></p>'
        +'<div class=\"dt-big '+cls(last.net)+'\">'+sgn(last.net)+' <span style=\"font-size:15px\">('+pc(last.net,last.amt)+')</span></div>'
        +'<div class=muted>Final profit/loss after costs</div>'
        +kv([['Bought at (ask)',fmt(last.ask)],['Sold at (bid)',fmt(last.exit)],['Invested',money(last.amt)],['Value at close',money(last.value)],
             ['Price change (incl. spread '+money(last.spread)+')','<span class=\"'+cls(last.gross)+'\">'+sgn(last.gross)+'</span>']]
           .concat(last.lines.length?last.lines.map(l=>[l[0],'-'+money(l[1])]):[['Fees','none for '+KN[last.kind]+'s']])
           .concat([['Total costs','-'+money(last.fees),'tot'],['Final profit/loss','<span class=\"'+cls(last.net)+'\">'+sgn(last.net)+'</span>','tot']]))+'</div>';}
-  el.innerHTML=h;
-  const ob=$('dt-openbtn');if(ob)ob.onclick=openPos;
-  const ca=$('dt-closeall');if(ca)ca.onclick=closeAll;
+  const tot=hist.reduce((a,x)=>a+x.net,0),wins=hist.filter(x=>x.net>0).length;
+  sh+=hist.length?'<div class=tbl><table><tr><th>Symbol</th><th>Closed</th><th>Held</th><th>Costs</th><th>Net</th></tr>'
+    +hist.map(x=>'<tr><td>'+x.symbol+'</td><td>'+hm(x.tc)+'</td><td>'+dur(x.tc-x.t)+'</td><td>'+money(x.fees)+'</td><td class=\"'+cls(x.net)+'\">'+sgn(x.net)+'</td></tr>').join('')
+    +'</table></div><p class=muted>'+hist.length+(hist.length===1?' trade':' trades')+' · '+wins+' in profit · total net: <b class=\"'+cls(tot)+'\">'+sgn(tot)+'</b> · <a href=\"#\" id=dt-clear>clear</a></p>'
+    :(last?'':'<p class=muted>No closed paper trades yet.</p>');
+  $('dt-hist').innerHTML=sh;
   const dm=$('dt-dismiss');if(dm)dm.onclick=e=>{e.preventDefault();last=null;paint();};
-  el.querySelectorAll('[data-close]').forEach(b=>b.onclick=()=>closePos(b.dataset.close));
-  el.querySelectorAll('[data-show]').forEach(a=>a.onclick=e=>{e.preventDefault();const p=open_.find(x=>String(x.iid)===a.dataset.show);
-    if(p&&(!cur||cur.instrumentId!==p.iid))pick({instrumentId:p.iid,symbol:p.symbol,name:p.name});});
-  const hl=$('dt-hist'),tot=hist.reduce((a,x)=>a+x.net,0);
-  hl.innerHTML=hist.length?'<h3 style=\"margin-top:16px\">Closed paper trades</h3><div class=tbl><table><tr><th>Symbol</th><th>Held</th><th>Costs</th><th>Net</th></tr>'
-    +hist.map(x=>'<tr><td>'+x.symbol+'</td><td>'+dur(x.tc-x.t)+'</td><td>'+money(x.fees)+'</td><td class=\"'+cls(x.net)+'\">'+sgn(x.net)+'</td></tr>').join('')
-    +'</table></div><p class=muted>'+hist.length+(hist.length===1?' trade':' trades')+' · total net: <b class=\"'+cls(tot)+'\">'+sgn(tot)+'</b> · <a href=\"#\" id=dt-clear>clear</a></p>':'';
   const cl=$('dt-clear');if(cl)cl.onclick=e=>{e.preventDefault();if(confirm('Clear the closed paper trade history?')){hist=[];sv('dt-hist',hist);paint();}};}
-// keep open <details> open across repaints
-let openDet=new Set();document.addEventListener('toggle',e=>{const d=e.target;if(d.tagName!=='DETAILS'||!d.closest('.dt-pos'))return;
-  const id=d.parentElement.querySelector('[data-close]').dataset.close;d.open?openDet.add(id):openDet.delete(id);},true);
-const _paint=paint;paint=function(){_paint();document.querySelectorAll('.dt-pos [data-close]').forEach(b=>{if(openDet.has(b.dataset.close)){const d=b.parentElement.querySelector('details');if(d)d.open=true;}});};
 setInterval(()=>{if(open_.length)paint();},1000);
+addEventListener('resize',()=>paint());
+if(open_.length)loadPosCharts();
 // ---- start: ?iid= in the address, else the last symbol viewed
 let saved=null;try{saved=JSON.parse(localStorage.getItem('dt-cur')||'null');}catch(e){}
 const want=new URLSearchParams(location.search).get('iid');
@@ -1303,15 +1337,15 @@ def daytrader_page():
                   "<div class=dt-results id=dt-results></div></div>")
     chart = ("<div class=layout><section class='card dt-chartcard' id=dt-card style='display:none'>"
              "<div class=dt-head><b id=dt-sym style='font-size:18px'></b><span class=muted id=dt-name></span>"
-             "<span class=pill id=dt-live></span></div>"
+             "<span class=pill id=dt-live></span><button id=dt-openbtn>Open $100 paper buy</button></div>"
              "<div class=dt-head><span class=dt-px id=dt-px>–</span><span id=dt-chg></span>"
              "<span class=muted id=dt-ba></span></div>"
              "<svg id=dt-chart role=img aria-label='30 minute candle chart'></svg>"
              "<div class=dt-head style='margin-top:6px'><span class=muted id=dt-ohlc></span>"
              "<span class='muted right' style='margin-left:auto'><span id=dt-status></span> · <span id=dt-next></span></span></div>"
              "</section>"
-             "<section class='card dt-paper' id=dt-paper style='display:none'><h2>Paper trade (theoretical)</h2>"
-             "<div id=dt-pbody></div>"
+             "<section class='card dt-paper' id=dt-paper><h2>Open paper trades (theoretical)</h2><div id=dt-pbody></div></section>"
+             "<section class='card dt-side'><h2>Closed paper trades</h2><div id=dt-hist></div>"
              "<details style='margin-top:12px'><summary>Cost assumptions</summary>"
              "<div class=dt-set><div><label>Share commission per side</label><select id=dt-comm>"
              "<option value=0>$0</option><option value=1>$1</option><option value=2>$2</option></select></div>"
@@ -1320,9 +1354,9 @@ def daytrader_page():
              "Crypto: 1% fee to buy and 1% to sell. Shares: commission per side (eToro charges $1 or $2 by country and "
              "exchange; check the estimated cost on eToro's trade screen and set it here), plus 0.5% UK stamp duty on buys "
              "of London-listed shares. ETFs: no commission. Currency conversion applies only if your account currency "
-             "differs from the asset's; 0 for a USD account trading USD assets. Overnight fees for CFDs are not included.</p>"
-             "</details>"
-             "<div id=dt-hist></div></section></div>")
+             "differs from the asset's; 0 for a USD account trading USD assets. Overnight fees for CFDs are not included. "
+             "The <b>target</b> line is the price at which selling would exactly cover all of these costs.</p>"
+             "</details></section></div>")
     html_ = page("Day trader", f"<style>{DT_CSS}</style>" + search + chart, active="Day trader").body.decode()
     html_ = html_.replace("<body>", f"<body data-root='{esc(B)}'>", 1).replace("</body>", f"<script>{DT_JS}</script></body>", 1)
     return HTMLResponse(html_)
