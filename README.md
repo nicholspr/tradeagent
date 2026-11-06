@@ -239,7 +239,8 @@ A first step towards intraday tools. Search for any eToro instrument by symbol o
 - eToro's smallest candle is 1 minute, so the app builds **30-second candles** itself by sampling the live bid every 5 seconds while the page is open. The chart starts with the last 30 minutes of 1-minute candles (drawn paler), and the live 30-second candles replace them as they form.
 - The card shows the bid, ask and spread, the change over the 30 minutes, and **Live** or **Market closed** (with the time of the last price). Hover over or tap a candle to see its open, high, low and close.
 - Sampling stops by itself about two minutes after you close the page, so it uses no eToro quota when nobody is watching. The last symbol is remembered, and `/daytrader?iid=<instrument id>` opens one directly.
-- Nothing is traded from this page.
+- **Paper trade (theoretical $100).** Beside the chart, **Open $100 position** records a pretend buy at the current ask. While it is open, the panel updates every 5 seconds with the change in value, the spread paid and the net result if you closed now, and an amber line marks the entry on the chart. **Close position** sells at the bid and shows the final profit or loss after costs, line by line. Costs follow eToro's published fees: crypto 1% to buy and 1% to sell; shares a commission per side ($1 or $2 by country and exchange, set under *Cost assumptions*, default $1) plus 0.5% UK stamp duty on buys of `.L` shares; ETFs no commission; an optional currency conversion % per side (0 for a USD account trading USD assets). CFD overnight fees are not included. The open position and your last 10 results are kept in your browser, so they survive a refresh but aren't shared between devices.
+- Nothing is ever sent to eToro from this page.
 
 ### Scorecard: does it work?
 - **What it measures:** every finished analysis, from the price at the time of the call to the close **5, 20 and 60 trading days** later. Each result is compared with **VWRL.L** (Vanguard FTSE All-World) over the same dates.
@@ -349,7 +350,7 @@ Removing an entry does not sell it; holdings stay until sold. London (`.L`) inst
 
 ```bash
 pip install -r requirements.txt
-python -m pytest -q tests          # 68 tests, all offline (fakes for eToro, Claude, email)
+python -m pytest -q tests          # 69 tests, all offline (fakes for eToro, Claude, email)
 DATA_DIR=./data uvicorn app.web:app --reload
 ```
 

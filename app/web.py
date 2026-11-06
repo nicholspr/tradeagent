@@ -1077,6 +1077,14 @@ border-radius:10px;max-height:340px;overflow:auto;display:none;box-shadow:0 8px 
 .dt-head .dt-px{font-size:26px;font-weight:700}.dt-up{color:#22c55e}.dt-dn{color:#ef4444}
 #dt-chart{width:100%;height:440px;display:block;touch-action:none}
 #dt-chart text{fill:var(--muted);font-size:11px}
+.dt-chartcard{grid-column:span 8}.dt-paper{grid-column:span 4}
+@media(max-width:1100px){.dt-chartcard,.dt-paper{grid-column:span 12}}
+.dt-kv{display:grid;grid-template-columns:auto 1fr;gap:4px 12px;font-size:13px;margin:10px 0}
+.dt-kv>span:nth-child(odd){color:var(--muted)}.dt-kv>span:nth-child(even){text-align:right;font-variant-numeric:tabular-nums}.dt-kv>span.tot{color:var(--text)}
+.dt-big{font-size:28px;font-weight:700;font-variant-numeric:tabular-nums}
+.dt-kv .tot{font-weight:700;border-top:1px solid var(--line);padding-top:6px}
+.dt-paper button{width:100%;margin-top:6px}.dt-paper button.close{background:#b91c1c}.dt-paper button.close:hover{background:#991b1b}
+.dt-set{display:grid;grid-template-columns:1fr 1fr;gap:8px;margin-top:10px}
 @media(max-width:700px){#dt-chart{height:320px}}
 """
 
@@ -1109,8 +1117,8 @@ document.addEventListener('click',e=>{if(!e.target.closest('.dt-search'))res.sty
 function pick(it){cur=it;res.style.display='none';box.value='';
   try{localStorage.setItem('dt-cur',JSON.stringify(it));}catch(e){}
   history.replaceState(null,'','?iid='+it.instrumentId);
-  $('dt-card').style.display='';$('dt-sym').textContent=it.symbol;$('dt-name').textContent=it.name;
-  data=null;draw();load();}
+  $('dt-card').style.display='';$('dt-paper').style.display='';$('dt-sym').textContent=it.symbol;$('dt-name').textContent=it.name;
+  data=null;draw();load();if(typeof poll==='function'){paint();poll();}}
 // ---- data
 function load(){if(!cur)return;clearTimeout(timer);$('dt-status').textContent='Updating…';
   fetch(B+'/daytrader/candles/'+cur.instrumentId).then(r=>{if(!r.ok)throw new Error(r.status);return r.json();})
@@ -1160,6 +1168,9 @@ function draw(){const svg=$('dt-chart'),W=svg.clientWidth||800,H=svg.clientHeigh
     g+='<line x1=\"'+L+'\" x2=\"'+(L+pw)+'\" y1=\"'+y+'\" y2=\"'+y+'\" stroke=\"#3b82f6\" stroke-dasharray=\"4 3\"/>'
      +'<rect x=\"'+(L+pw+2)+'\" y=\"'+(y-9)+'\" width=\"'+(R-4)+'\" height=\"18\" rx=\"4\" fill=\"#3b82f6\"/>'
      +'<text x=\"'+(L+pw+6)+'\" y=\"'+(y+4)+'\" style=\"fill:#fff\">'+fmt(data.open?q.bid:cs[cs.length-1].c)+'</text>';}
+  if(typeof pos!=='undefined'&&pos&&pos.iid===data.instrumentId&&pos.ask>=lo&&pos.ask<=hi){const y=Y(pos.ask);
+    g+='<line x1=\"'+L+'\" x2=\"'+(L+pw)+'\" y1=\"'+y+'\" y2=\"'+y+'\" stroke=\"#f59e0b\" stroke-dasharray=\"6 4\"/>'
+     +'<text x=\"'+(L+6)+'\" y=\"'+(y-5)+'\" style=\"fill:#f59e0b\">Paper buy '+fmt(pos.ask)+'</text>';}
   if(hover!=null){const c=cs.find(c=>hover>=c.t&&hover<c.t+c.d);
     if(c){const x=X(c.t+c.d/2);g+='<line x1=\"'+x+'\" x2=\"'+x+'\" y1=\"'+T+'\" y2=\"'+(T+ph)+'\" stroke=\"#8b93a3\" stroke-dasharray=\"2 3\"/>';
       $('dt-ohlc').textContent=hms(c.t)+' ('+(c.d===60?'1 min':'30 s')+')  O '+fmt(c.o)+'  H '+fmt(c.h)+'  L '+fmt(c.l)+'  C '+fmt(c.c);}}
@@ -1169,9 +1180,77 @@ function draw(){const svg=$('dt-chart'),W=svg.clientWidth||800,H=svg.clientHeigh
   svg.onpointerleave=()=>{hover=null;draw();};}
 function nice(x){const p=Math.pow(10,Math.floor(Math.log10(x))),f=x/p;return (f<1.5?1:f<3?2:f<7?5:10)*p;}
 addEventListener('resize',draw);
+
+// ---- paper trade
+const AMT=100;
+const ld=(k,d)=>{try{const v=localStorage.getItem(k);return v==null?d:JSON.parse(v);}catch(e){return d;}};
+const sv=(k,v)=>{try{localStorage.setItem(k,JSON.stringify(v));}catch(e){}};
+let pos=ld('dt-pos',null),pq=null,ptimer=null,last=null,hist=ld('dt-hist',[]);
+const cfg=ld('dt-cfg',{comm:1,fx:0});$('dt-comm').value=cfg.comm;$('dt-fx').value=cfg.fx;
+$('dt-comm').onchange=$('dt-fx').oninput=()=>{cfg.comm=+$('dt-comm').value;cfg.fx=Math.max(0,+$('dt-fx').value||0);sv('dt-cfg',cfg);paint();};
+const money=v=>(v<0?'-$':'$')+Math.abs(v).toFixed(2);
+const sgn=v=>(v>=0?'+':'-')+'$'+Math.abs(v).toFixed(2);
+const cls=v=>v>=0?'dt-up':'dt-dn';
+const dur=s=>{s=Math.round(s);const h=Math.floor(s/3600),m=Math.floor(s%3600/60),x=s%60;return (h?h+'h ':'')+(h||m?m+'m ':'')+x+'s';};
+// eToro cost rules for one round trip: buy `amt` at `ask`, sell at `bid`
+function costs(p,bid){const units=p.amt/p.ask,value=units*bid,lines=[];
+  if(p.kind==='crypto'){lines.push(['Crypto fee 1% (buy)',p.amt*0.01]);lines.push(['Crypto fee 1% (sell)',value*0.01]);}
+  if(p.kind==='stock'&&p.comm>0){lines.push(['Commission (open)',p.comm]);lines.push(['Commission (close)',p.comm]);}
+  if(p.kind==='stock'&&/\\.L$/i.test(p.symbol))lines.push(['UK stamp duty 0.5%',Math.ceil(p.amt*0.5)/100]);
+  if(p.fx>0){lines.push(['Currency conversion (in)',p.amt*p.fx/100]);lines.push(['Currency conversion (out)',value*p.fx/100]);}
+  const fees=lines.reduce((a,l)=>a+l[1],0),gross=value-p.amt;
+  return {units,value,gross,lines,fees,net:gross-fees,spread:units*(p.ask-p.bid0)};}
+function poll(){clearTimeout(ptimer);const iid=pos?pos.iid:(cur&&cur.instrumentId);if(!iid)return;
+  fetch(B+'/daytrader/quote/'+iid).then(r=>{if(!r.ok)throw 0;return r.json();}).then(q=>{pq=q;paint();})
+  .catch(()=>{}).finally(()=>{ptimer=setTimeout(poll,pos?5000:30000);});}
+function openPos(){if(!cur)return;$('dt-pbody').querySelector('button').disabled=true;
+  fetch(B+'/daytrader/quote/'+cur.instrumentId).then(r=>{if(!r.ok)throw 0;return r.json();}).then(q=>{
+    if(!q.open&&!confirm('The market looks closed, so this price is stale. Open anyway?')){paint();return;}
+    pos={iid:cur.instrumentId,symbol:cur.symbol,name:cur.name||'',kind:(data&&data.kind)||kindOf(cur.type),
+      amt:AMT,ask:q.ask,bid0:q.bid,t:Date.now()/1000,comm:cfg.comm,fx:cfg.fx};
+    sv('dt-pos',pos);last=null;pq=q;paint();poll();draw();}).catch(()=>{alert('Could not get a price from eToro, try again.');paint();});}
+function closePos(){if(!pos)return;$('dt-pbody').querySelector('button').disabled=true;
+  fetch(B+'/daytrader/quote/'+pos.iid).then(r=>{if(!r.ok)throw 0;return r.json();}).then(q=>{
+    const c=costs(pos,q.bid);last=Object.assign({},pos,{exit:q.bid,tc:Date.now()/1000},c);
+    hist.unshift({symbol:pos.symbol,t:pos.t,tc:last.tc,ask:pos.ask,exit:q.bid,gross:c.gross,fees:c.fees,net:c.net});hist=hist.slice(0,10);
+    sv('dt-hist',hist);pos=null;sv('dt-pos',null);paint();draw();poll();})
+  .catch(()=>{alert('Could not get a price from eToro, try again.');paint();});}
+function kindOf(t){t=(t||'').toLowerCase();return t.startsWith('crypto')?'crypto':t==='etf'?'etf':t.startsWith('stock')?'stock':'other';}
+const KN={crypto:'Crypto',stock:'Share',etf:'ETF',other:'CFD/other'};
+function kv(rows){return '<div class=dt-kv>'+rows.map(r=>'<span'+(r[2]?' class=\"'+r[2]+'\"':'')+'>'+r[0]+'</span><span'+(r[2]?' class=\"'+r[2]+'\"':'')+'>'+r[1]+'</span>').join('')+'</div>';}
+function paint(){const el=$('dt-pbody');if(!el)return;let h='';
+  if(pos){const q=pq&&pq.instrumentId===pos.iid?pq:null;
+    h+='<p><b>'+pos.symbol+'</b> <span class=muted>'+KN[pos.kind]+' · '+money(pos.amt)+' opened '+hms(pos.t)+' · open for '+dur(Date.now()/1000-pos.t)+'</span></p>';
+    if(q){const c=costs(pos,q.bid),pct=c.gross/pos.amt*100;
+      h+='<div class=\"dt-big '+cls(c.gross)+'\">'+sgn(c.gross)+' <span style=\"font-size:15px\">('+(pct>=0?'+':'')+pct.toFixed(2)+'%)</span></div>'
+       +'<div class=muted>Change in value'+(q.open?'':' · market closed, price not moving')+'</div>'
+       +kv([['Bought at (ask)',fmt(pos.ask)],['Now (bid)',fmt(q.bid)],['Units',c.units.toPrecision(6)],['Value now',money(c.value)],
+            ['Spread paid on entry',money(c.spread)],['Costs if closed now',money(c.fees)],['Net if closed now','<b class=\"'+cls(c.net)+'\">'+sgn(c.net)+'</b>']]);}
+    else h+='<p class=muted>Getting the price…</p>';
+    if(cur&&cur.instrumentId!==pos.iid)h+='<p class=muted>This position is in '+pos.symbol+', not the chart’s symbol.</p>';
+    h+='<button class=close>Close position</button>';}
+  else{if(last){const pct=last.net/last.amt*100;
+      h+='<p><b>Closed '+last.symbol+'</b> <span class=muted>held '+dur(last.tc-last.t)+'</span></p>'
+       +'<div class=\"dt-big '+cls(last.net)+'\">'+sgn(last.net)+' <span style=\"font-size:15px\">('+(pct>=0?'+':'')+pct.toFixed(2)+'%)</span></div>'
+       +'<div class=muted>Final profit/loss after costs</div>'
+       +kv([['Bought at (ask)',fmt(last.ask)],['Sold at (bid)',fmt(last.exit)],['Invested',money(last.amt)],['Value at close',money(last.value)],
+            ['Price change (incl. spread '+money(last.spread)+')','<span class=\"'+cls(last.gross)+'\">'+sgn(last.gross)+'</span>']]
+          .concat(last.lines.length?last.lines.map(l=>[l[0],'-'+money(l[1])]):[['Fees','none for '+KN[last.kind]+'s']])
+          .concat([['Total costs','-'+money(last.fees),'tot'],['Final profit/loss','<span class=\"'+cls(last.net)+'\">'+sgn(last.net)+'</span>','tot']]));}
+    if(cur){const q=pq&&pq.instrumentId===cur.instrumentId?pq:null;
+      h+='<p class=muted>Open a theoretical $'+AMT+' buy of <b>'+cur.symbol+'</b>'+(q?' at the ask, '+fmt(q.ask):'')+'. Nothing is sent to eToro.</p>'
+       +'<button class=open>Open $'+AMT+' position</button>';}}
+  el.innerHTML=h;const b=el.querySelector('button');if(b)b.onclick=pos?closePos:openPos;
+  const hl=$('dt-hist');
+  hl.innerHTML=hist.length?'<h3 style=\"margin-top:16px\">Recent paper trades</h3><div class=tbl><table><tr><th>Symbol</th><th>Held</th><th>Costs</th><th>Net</th></tr>'
+    +hist.map(x=>'<tr><td>'+x.symbol+'</td><td>'+dur(x.tc-x.t)+'</td><td>'+money(x.fees)+'</td><td class=\"'+cls(x.net)+'\">'+sgn(x.net)+'</td></tr>').join('')
+    +'</table></div><p class=muted>Total net: <b class=\"'+cls(hist.reduce((a,x)=>a+x.net,0))+'\">'+sgn(hist.reduce((a,x)=>a+x.net,0))+'</b> · <a href=\"#\" id=dt-clear>clear</a></p>':'';
+  const cl=$('dt-clear');if(cl)cl.onclick=e=>{e.preventDefault();if(confirm('Clear the paper trade history?')){hist=[];sv('dt-hist',hist);paint();}};}
+setInterval(()=>{if(pos)paint();},1000);
 // ---- start: ?iid= in the address, else the last symbol viewed
 let saved=null;try{saved=JSON.parse(localStorage.getItem('dt-cur')||'null');}catch(e){}
 const want=new URLSearchParams(location.search).get('iid');
+if(!want&&pos&&(!saved||saved.instrumentId!==pos.iid))saved={instrumentId:pos.iid,symbol:pos.symbol,name:pos.name};
 if(saved&&(!want||String(saved.instrumentId)===want))pick(saved);
 else if(want)pick({instrumentId:+want,symbol:'#'+want,name:''});
 })();
@@ -1181,14 +1260,14 @@ else if(want)pick({instrumentId:+want,symbol:'#'+want,name:''});
 @app.get("/daytrader", response_class=HTMLResponse)
 def daytrader_page():
     search = card("Day trader (test)",
-                  "<p class=muted>Pick any eToro instrument to watch a live 30-minute candle chart. Nothing is traded from "
-                  "this page. eToro's smallest candle is 1 minute, so the chart starts with 1-minute candles (paler) and "
-                  "30-second candles, built from the live price sampled every 5 seconds, take over while the page is open. "
-                  "It updates every 30 seconds.</p>"
+                  "<p class=muted>Pick any eToro instrument to watch a live 30-minute candle chart, and try a theoretical $100 "
+                  "paper trade beside it. Nothing is ever sent to eToro from this page. eToro's smallest candle is 1 minute, "
+                  "so the chart starts with 1-minute candles (paler) and 30-second candles, built from the live price sampled "
+                  "every 5 seconds, take over while the page is open. It updates every 30 seconds.</p>"
                   "<div class=dt-search><label>Symbol or name</label>"
                   "<input id=dt-q autocomplete=off placeholder='e.g. NVDA, Tesla, BTC, IUCS.L'>"
                   "<div class=dt-results id=dt-results></div></div>")
-    chart = ("<section class='card c12' id=dt-card style='display:none'>"
+    chart = ("<div class=layout><section class='card dt-chartcard' id=dt-card style='display:none'>"
              "<div class=dt-head><b id=dt-sym style='font-size:18px'></b><span class=muted id=dt-name></span>"
              "<span class=pill id=dt-live></span></div>"
              "<div class=dt-head><span class=dt-px id=dt-px>–</span><span id=dt-chg></span>"
@@ -1196,7 +1275,20 @@ def daytrader_page():
              "<svg id=dt-chart role=img aria-label='30 minute candle chart'></svg>"
              "<div class=dt-head style='margin-top:6px'><span class=muted id=dt-ohlc></span>"
              "<span class='muted right' style='margin-left:auto'><span id=dt-status></span> · <span id=dt-next></span></span></div>"
-             "</section>")
+             "</section>"
+             "<section class='card dt-paper' id=dt-paper style='display:none'><h2>Paper trade (theoretical)</h2>"
+             "<div id=dt-pbody></div>"
+             "<details style='margin-top:12px'><summary>Cost assumptions</summary>"
+             "<div class=dt-set><div><label>Share commission per side</label><select id=dt-comm>"
+             "<option value=0>$0</option><option value=1>$1</option><option value=2>$2</option></select></div>"
+             "<div><label>Currency conversion % per side</label><input id=dt-fx type=number min=0 max=3 step=0.05></div></div>"
+             "<p class=muted>Buys fill at the <b>ask</b> and sells at the <b>bid</b>, so the spread is in the price. "
+             "Crypto: 1% fee to buy and 1% to sell. Shares: commission per side (eToro charges $1 or $2 by country and "
+             "exchange; check the estimated cost on eToro's trade screen and set it here), plus 0.5% UK stamp duty on buys "
+             "of London-listed shares. ETFs: no commission. Currency conversion applies only if your account currency "
+             "differs from the asset's; 0 for a USD account trading USD assets. Overnight fees for CFDs are not included.</p>"
+             "</details>"
+             "<div id=dt-hist></div></section></div>")
     html_ = page("Day trader", f"<style>{DT_CSS}</style>" + search + chart, active="Day trader").body.decode()
     html_ = html_.replace("<body>", f"<body data-root='{esc(B)}'>", 1).replace("</body>", f"<script>{DT_JS}</script></body>", 1)
     return HTMLResponse(html_)
@@ -1208,6 +1300,14 @@ def daytrader_search(q: str = ""):
         return daytrader.search(q)
     except Exception as e:  # noqa: BLE001
         raise HTTPException(502, f"eToro search failed: {str(e)[:200]}")
+
+
+@app.get("/daytrader/quote/{iid}")
+def daytrader_quote(iid: int):
+    try:
+        return daytrader.quote(iid)
+    except Exception as e:  # noqa: BLE001
+        raise HTTPException(502, f"eToro price failed: {str(e)[:200]}")
 
 
 @app.get("/daytrader/candles/{iid}")

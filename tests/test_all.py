@@ -1719,5 +1719,18 @@ def test_daytrader_page_and_api(eng, monkeypatch):
         assert r.status_code == 200 and "Day trader" in r.text and "dt-chart" in r.text and "data-root" in r.text
         assert c.get("/daytrader/search?q=nvd").json()[0]["symbol"] == "NVDA"
         assert c.get("/daytrader/candles/1137").json()["instrumentId"] == 1137
+        assert "dt-paper" in r.text and "Paper trade" in r.text
         assert "Day trader" in c.get("/").text                     # in the top menu
     assert not orders(fs)                                          # the page never trades
+
+
+def test_daytrader_quote_uses_sampled_price(monkeypatch):
+    from app import daytrader as dt
+    import time as _t
+    monkeypatch.setattr(dt, "watch", lambda iid: dt._watch.setdefault(iid, {"buckets": {}, "quote": None, "seen": _t.time()}))
+    dt._watch[42] = {"buckets": {}, "seen": _t.time(), "quote": {"bid": 9.9, "ask": 10.0, "ts": _t.time()}}
+    q = dt.quote(42)
+    assert q["ask"] == 10.0 and q["bid"] == 9.9 and q["open"] and q["instrumentId"] == 42
+    dt._watch[42]["quote"]["ts"] = _t.time() - 3600         # an hour-old price means the market is closed
+    assert dt.quote(42)["open"] is False
+    dt._watch.pop(42, None)

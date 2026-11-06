@@ -133,16 +133,37 @@ def merge(history: list[dict], buckets: dict, end: float) -> list[dict]:
     return [c for c in hist + live if c["t"] + c["d"] > start and c["t"] <= end]
 
 
-def _name(iid: int) -> tuple[str, str]:
-    """Symbol and display name for an instrument id."""
+KINDS = {5: "stock", 6: "etf", 10: "crypto"}     # eToro instrumentTypeID -> fee rules on the page
+
+
+def _name(iid: int) -> tuple[str, str, str]:
+    """Symbol, display name and kind (stock, etf, crypto or other) for an instrument id."""
     try:
         data = engine.client()._req("GET", "/api/v1/market-data/instruments", params={"instrumentIds": str(iid)})
         for it in data.get("instrumentDisplayDatas") or data.get("items") or []:
             return (it.get("symbolFull") or it.get("internalSymbolFull") or f"#{iid}",
-                    it.get("instrumentDisplayName") or it.get("internalInstrumentDisplayName") or "")
+                    it.get("instrumentDisplayName") or it.get("internalInstrumentDisplayName") or "",
+                    KINDS.get(it.get("instrumentTypeID"), "other"))
     except Exception:  # noqa: BLE001
         pass
-    return (f"#{iid}", "")
+    return (f"#{iid}", "", "other")
+
+
+def quote(iid: int) -> dict:
+    """Latest bid/ask for the paper trade panel: the sampler's last price (no extra eToro call),
+    or a fresh rate if the sampler has none yet."""
+    watch(iid)
+    with _lock:
+        q = dict(_watch[iid]["quote"]) if _watch.get(iid, {}).get("quote") else None
+    if q is None:
+        r = engine.client().rates([iid]).get(iid)
+        if not r or r.get("bid") is None:
+            raise ValueError("no price available")
+        q = {"bid": float(r["bid"]), "ask": float(r.get("ask") or r["bid"]),
+             "ts": _parse_ts(r.get("date", "")) or time.time()}
+    q["open"] = time.time() - q["ts"] <= STALE_AFTER
+    q["instrumentId"] = iid
+    return q
 
 
 def chart(iid: int) -> dict:
@@ -164,5 +185,5 @@ def chart(iid: int) -> dict:
     last_hist = _parse_ts(history[-1]["date"]) + 60 if history else now
     end = now if is_open else max(last_hist, max(buckets) + BUCKET if buckets else 0)
     name = _cached(("name", iid), 3600, lambda: _name(iid))
-    return {"instrumentId": iid, "symbol": name[0], "name": name[1], "open": is_open, "quote": quote, "end": end, "window": WINDOW,
+    return {"instrumentId": iid, "symbol": name[0], "name": name[1], "kind": name[2], "open": is_open, "quote": quote, "end": end, "window": WINDOW,
             "bucket": BUCKET, "candles": merge(history, buckets, end), "serverTime": now}
