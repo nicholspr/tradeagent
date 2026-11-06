@@ -234,6 +234,13 @@ The top menu has **Overview, Opportunities, Scorecard, Logs and Settings**. The 
 - **Adding to the watchlist:** **Watch** adds an idea to the watchlist in the right format.
 - **Limits:** at most **3 scans a day**. The page never places or queues a trade.
 
+### Day trader (test)
+A first step towards intraday tools. Search for any eToro instrument by symbol or name, and a card shows a **30-minute candle chart** with time across and price up, refreshed every **30 seconds**.
+- eToro's smallest candle is 1 minute, so the app builds **30-second candles** itself by sampling the live bid every 5 seconds while the page is open. The chart starts with the last 30 minutes of 1-minute candles (drawn paler), and the live 30-second candles replace them as they form.
+- The card shows the bid, ask and spread, the change over the 30 minutes, and **Live** or **Market closed** (with the time of the last price). Hover over or tap a candle to see its open, high, low and close.
+- Sampling stops by itself about two minutes after you close the page, so it uses no eToro quota when nobody is watching. The last symbol is remembered, and `/daytrader?iid=<instrument id>` opens one directly.
+- Nothing is traded from this page.
+
 ### Scorecard: does it work?
 - **What it measures:** every finished analysis, from the price at the time of the call to the close **5, 20 and 60 trading days** later. Each result is compared with **VWRL.L** (Vanguard FTSE All-World) over the same dates.
 - **What counts as worked:** a Buy or Overweight **worked** if the share then beat the benchmark; an Underweight or Sell worked if it lagged it. Holds are shown but not scored.
@@ -342,7 +349,7 @@ Removing an entry does not sell it; holdings stay until sold. London (`.L`) inst
 
 ```bash
 pip install -r requirements.txt
-python -m pytest -q tests          # 66 tests, all offline (fakes for eToro, Claude, email)
+python -m pytest -q tests          # 68 tests, all offline (fakes for eToro, Claude, email)
 DATA_DIR=./data uvicorn app.web:app --reload
 ```
 
@@ -355,6 +362,7 @@ On Windows, `run-local.bat` runs the full app at `http://localhost:8000/`. It al
 | `app/analyst.py` | Adapts the TradingAgents graph. Builds the portfolio context plus the account rules the agents see. |
 | `app/policy.py` | Watchlist parsing, rating → proposal, hard limits, approval rules, and the account-rules text. Pure functions, fully tested. |
 | `app/engine.py` | Analysis, proposals, approval, execution, the queue, scheduled runs, pre-flight, overrides, the daily summary, the audit trail and one-off fixes. |
+| `app/daytrader.py` | Day trader test page: eToro instrument search, live price sampling and 30-second candles. |
 | `app/terms.py` | Holding period per symbol; the short-term agent note; stop-loss and take-profit extraction and sanity checks. |
 | `app/levels.py` | Watch levels: extraction, the overnight check, queue priority, agent notes and backfill. |
 | `app/scorecard.py` | Scorecard: returns after each call at 5, 20 and 60 days against VWRL.L, hit rates by rating, models and symbol. |

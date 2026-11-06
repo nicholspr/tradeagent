@@ -12,7 +12,7 @@ from apscheduler.triggers.cron import CronTrigger
 from fastapi import FastAPI, Form, HTTPException, Request
 from fastapi.responses import HTMLResponse, RedirectResponse
 
-from . import performance, scorecard, terms, config, engine, markets, opportunities, policy, store
+from . import daytrader, performance, scorecard, terms, config, engine, markets, opportunities, policy, store
 
 sched = BackgroundScheduler(timezone=config.TZ)
 
@@ -151,7 +151,7 @@ input.invalid,textarea.invalid{border-color:#dc2626;box-shadow:0 0 0 2px #dc2626
 }
 """
 
-NAV = [("Overview", "/"), ("Opportunities", "/opportunities"), ("Scorecard", "/scorecard"), ("Logs", "/logs"),
+NAV = [("Overview", "/"), ("Opportunities", "/opportunities"), ("Day trader", "/daytrader"), ("Scorecard", "/scorecard"), ("Logs", "/logs"),
        ("Settings", "/settings")]
 
 
@@ -1063,6 +1063,159 @@ def opportunities_watch(symbol: str):
         store.log("info", f"{o['symbol']} added to watchlist from opportunity scan #{scan['id']}"
                           + (" as a short-term idea" if o.get("term") == terms.SHORT else ""))
     return back("/opportunities")
+
+
+# ---- day trader test page --------------------------------------------------------------
+DT_CSS = """
+.dt-search{position:relative;max-width:520px}
+.dt-results{position:absolute;z-index:20;left:0;right:0;top:100%;margin-top:4px;background:var(--card);border:1px solid var(--line);
+border-radius:10px;max-height:340px;overflow:auto;display:none;box-shadow:0 8px 24px #0008}
+.dt-results div{display:flex;gap:10px;align-items:center;padding:8px 10px;cursor:pointer;border-bottom:1px solid var(--line2)}
+.dt-results div:hover,.dt-results div.hl{background:#1f2531}.dt-results img{width:22px;height:22px;border-radius:50%}
+.dt-results b{min-width:84px}.dt-results span{color:var(--muted);font-size:12px}
+.dt-head{display:flex;flex-wrap:wrap;gap:6px 18px;align-items:baseline;margin-bottom:8px}
+.dt-head .dt-px{font-size:26px;font-weight:700}.dt-up{color:#22c55e}.dt-dn{color:#ef4444}
+#dt-chart{width:100%;height:440px;display:block;touch-action:none}
+#dt-chart text{fill:var(--muted);font-size:11px}
+@media(max-width:700px){#dt-chart{height:320px}}
+"""
+
+DT_JS = """
+(()=>{
+const B=document.body.dataset.root||'';
+const $=id=>document.getElementById(id);
+let cur=null,data=null,timer=null,next=0,hover=null;
+const fmt=v=>v==null?'–':(Math.abs(v)>=1000?v.toLocaleString(undefined,{minimumFractionDigits:2,maximumFractionDigits:2})
+  :Math.abs(v)>=1?v.toFixed(Math.abs(v)>=100?2:3):String(+v.toPrecision(4)));
+const hm=t=>new Date(t*1000).toLocaleTimeString('en-GB',{hour:'2-digit',minute:'2-digit'});
+const hms=t=>new Date(t*1000).toLocaleTimeString('en-GB',{hour:'2-digit',minute:'2-digit',second:'2-digit'});
+// ---- search
+let st=null,hl=-1,items=[];
+const box=$('dt-q'),res=$('dt-results');
+box.addEventListener('input',()=>{clearTimeout(st);const q=box.value.trim();if(!q){res.style.display='none';return;}
+  st=setTimeout(()=>fetch(B+'/daytrader/search?q='+encodeURIComponent(q)).then(r=>r.json()).then(list=>{
+    items=list;hl=-1;res.innerHTML=list.length?'':'<div><span>No eToro instruments match</span></div>';
+    list.forEach((it,i)=>{const d=document.createElement('div');
+      d.innerHTML=(it.logo?'<img src=\"'+it.logo+'\" alt=\"\" referrerpolicy=no-referrer>':'')+'<b></b><span></span>';
+      d.querySelector('b').textContent=it.symbol;d.querySelector('span').textContent=it.name+' · '+it.type;
+      d.onclick=()=>pick(it);res.appendChild(d);});
+    res.style.display='block';}).catch(()=>{}),250);});
+box.addEventListener('keydown',e=>{const ds=res.querySelectorAll('div');if(!items.length)return;
+  if(e.key==='ArrowDown'||e.key==='ArrowUp'){e.preventDefault();hl=(hl+(e.key==='ArrowDown'?1:-1)+items.length)%items.length;
+    ds.forEach((d,i)=>d.classList.toggle('hl',i===hl));}
+  else if(e.key==='Enter'){e.preventDefault();pick(items[Math.max(hl,0)]);}
+  else if(e.key==='Escape'){res.style.display='none';}});
+document.addEventListener('click',e=>{if(!e.target.closest('.dt-search'))res.style.display='none';});
+function pick(it){cur=it;res.style.display='none';box.value='';
+  try{localStorage.setItem('dt-cur',JSON.stringify(it));}catch(e){}
+  history.replaceState(null,'','?iid='+it.instrumentId);
+  $('dt-card').style.display='';$('dt-sym').textContent=it.symbol;$('dt-name').textContent=it.name;
+  data=null;draw();load();}
+// ---- data
+function load(){if(!cur)return;clearTimeout(timer);$('dt-status').textContent='Updating…';
+  fetch(B+'/daytrader/candles/'+cur.instrumentId).then(r=>{if(!r.ok)throw new Error(r.status);return r.json();})
+  .then(d=>{if(!cur||d.instrumentId!==cur.instrumentId)return;data=d;draw();})
+  .catch(e=>{$('dt-status').textContent='Update failed ('+e.message+'), retrying';})
+  .finally(()=>{next=Date.now()+30000;timer=setTimeout(load,30000);});}
+setInterval(()=>{if(cur&&next){const s=Math.max(0,Math.round((next-Date.now())/1000));$('dt-next').textContent='next update in '+s+'s';}},1000);
+// ---- chart
+function draw(){const svg=$('dt-chart'),W=svg.clientWidth||800,H=svg.clientHeight||400;
+  svg.setAttribute('viewBox','0 0 '+W+' '+H);
+  if(!data){svg.innerHTML='<text x=\"12\" y=\"24\">Loading…</text>';return;}
+  const q=data.quote,cs=data.candles;
+  if(data.symbol&&cur){$('dt-sym').textContent=data.symbol;if(data.name)$('dt-name').textContent=data.name;
+    if(cur.symbol!==data.symbol){cur.symbol=data.symbol;cur.name=data.name||cur.name;try{localStorage.setItem('dt-cur',JSON.stringify(cur));}catch(e){}}}
+  $('dt-px').textContent=q?fmt(q.bid):'–';
+  $('dt-ba').textContent=q?('Bid '+fmt(q.bid)+' · Ask '+fmt(q.ask)+' · Spread '+fmt(q.ask-q.bid)):'';
+  const pill=$('dt-live');pill.className='pill '+(data.open?'okp':'warn');
+  pill.textContent=data.open?'Live':'Market closed'+(q?' · last price '+hms(q.ts):'');
+  $('dt-status').textContent='Updated '+hms(data.serverTime);
+  const ch=$('dt-chg');
+  if(cs.length&&q){const a=cs[0].o,b=data.open?q.bid:cs[cs.length-1].c,p=(b-a)/a*100;
+    ch.textContent=(p>=0?'+':'')+fmt(b-a)+' ('+(p>=0?'+':'')+p.toFixed(2)+'%) over 30 min';ch.className=p>=0?'dt-up':'dt-dn';}
+  else ch.textContent='';
+  if(!cs.length){svg.innerHTML='<text x=\"12\" y=\"24\">No price data in the last 30 minutes.</text>';return;}
+  const L=8,R=70,T=10,Bm=26,pw=W-L-R,ph=H-T-Bm,t1=data.end,t0=t1-data.window;
+  let lo=Math.min(...cs.map(c=>c.l)),hi=Math.max(...cs.map(c=>c.h));
+  if(q&&data.open){lo=Math.min(lo,q.bid);hi=Math.max(hi,q.bid);}
+  const pad=(hi-lo)*0.08||hi*0.001||1;lo-=pad;hi+=pad;
+  const X=t=>L+(t-t0)/(t1-t0)*pw,Y=v=>T+(hi-v)/(hi-lo)*ph;
+  let g='';
+  // y grid
+  const step=nice((hi-lo)/5);for(let v=Math.ceil(lo/step)*step;v<=hi;v+=step){const y=Y(v);
+    g+='<line x1=\"'+L+'\" x2=\"'+(L+pw)+'\" y1=\"'+y+'\" y2=\"'+y+'\" stroke=\"#262c37\"/>'
+     +'<text x=\"'+(L+pw+6)+'\" y=\"'+(y+4)+'\">'+fmt(v)+'</text>';}
+  // x grid every 5 minutes
+  const xs=pw<520?600:300;for(let t=Math.ceil(t0/xs)*xs;t<=t1;t+=xs){const x=X(t);
+    g+='<line x1=\"'+x+'\" x2=\"'+x+'\" y1=\"'+T+'\" y2=\"'+(T+ph)+'\" stroke=\"#1f242e\"/>'
+     +(x-L<18||L+pw-x<18?'':'<text x=\"'+x+'\" y=\"'+(H-8)+'\" text-anchor=\"middle\">'+hm(t)+'</text>');}
+  // candles
+  cs.forEach((c,i)=>{const up=c.c>=c.o,col=up?'#22c55e':'#ef4444',x0=X(Math.max(c.t,t0)),x1=X(c.t+c.d),
+    w=Math.max(1,(x1-x0)*0.7),cx=(x0+x1)/2,yo=Y(c.o),yc=Y(c.c);
+    g+='<line x1=\"'+cx+'\" x2=\"'+cx+'\" y1=\"'+Y(c.h)+'\" y2=\"'+Y(c.l)+'\" stroke=\"'+col+'\"/>'
+     +'<rect x=\"'+(cx-w/2)+'\" y=\"'+Math.min(yo,yc)+'\" width=\"'+w+'\" height=\"'+Math.max(1,Math.abs(yc-yo))+'\" fill=\"'+col+'\"'
+     +(c.d>data.bucket?' fill-opacity=\"0.55\"':'')+'/>';});
+  // last price line
+  if(q){const y=Y(data.open?q.bid:cs[cs.length-1].c);
+    g+='<line x1=\"'+L+'\" x2=\"'+(L+pw)+'\" y1=\"'+y+'\" y2=\"'+y+'\" stroke=\"#3b82f6\" stroke-dasharray=\"4 3\"/>'
+     +'<rect x=\"'+(L+pw+2)+'\" y=\"'+(y-9)+'\" width=\"'+(R-4)+'\" height=\"18\" rx=\"4\" fill=\"#3b82f6\"/>'
+     +'<text x=\"'+(L+pw+6)+'\" y=\"'+(y+4)+'\" style=\"fill:#fff\">'+fmt(data.open?q.bid:cs[cs.length-1].c)+'</text>';}
+  if(hover!=null){const c=cs.find(c=>hover>=c.t&&hover<c.t+c.d);
+    if(c){const x=X(c.t+c.d/2);g+='<line x1=\"'+x+'\" x2=\"'+x+'\" y1=\"'+T+'\" y2=\"'+(T+ph)+'\" stroke=\"#8b93a3\" stroke-dasharray=\"2 3\"/>';
+      $('dt-ohlc').textContent=hms(c.t)+' ('+(c.d===60?'1 min':'30 s')+')  O '+fmt(c.o)+'  H '+fmt(c.h)+'  L '+fmt(c.l)+'  C '+fmt(c.c);}}
+  else $('dt-ohlc').textContent='Hover or tap a candle for its prices';
+  svg.innerHTML=g;
+  svg.onpointermove=e=>{const r=svg.getBoundingClientRect(),x=(e.clientX-r.left)*(W/r.width);hover=t0+(x-L)/pw*(t1-t0);draw();};
+  svg.onpointerleave=()=>{hover=null;draw();};}
+function nice(x){const p=Math.pow(10,Math.floor(Math.log10(x))),f=x/p;return (f<1.5?1:f<3?2:f<7?5:10)*p;}
+addEventListener('resize',draw);
+// ---- start: ?iid= in the address, else the last symbol viewed
+let saved=null;try{saved=JSON.parse(localStorage.getItem('dt-cur')||'null');}catch(e){}
+const want=new URLSearchParams(location.search).get('iid');
+if(saved&&(!want||String(saved.instrumentId)===want))pick(saved);
+else if(want)pick({instrumentId:+want,symbol:'#'+want,name:''});
+})();
+"""
+
+
+@app.get("/daytrader", response_class=HTMLResponse)
+def daytrader_page():
+    search = card("Day trader (test)",
+                  "<p class=muted>Pick any eToro instrument to watch a live 30-minute candle chart. Nothing is traded from "
+                  "this page. eToro's smallest candle is 1 minute, so the chart starts with 1-minute candles (paler) and "
+                  "30-second candles, built from the live price sampled every 5 seconds, take over while the page is open. "
+                  "It updates every 30 seconds.</p>"
+                  "<div class=dt-search><label>Symbol or name</label>"
+                  "<input id=dt-q autocomplete=off placeholder='e.g. NVDA, Tesla, BTC, IUCS.L'>"
+                  "<div class=dt-results id=dt-results></div></div>")
+    chart = ("<section class='card c12' id=dt-card style='display:none'>"
+             "<div class=dt-head><b id=dt-sym style='font-size:18px'></b><span class=muted id=dt-name></span>"
+             "<span class=pill id=dt-live></span></div>"
+             "<div class=dt-head><span class=dt-px id=dt-px>–</span><span id=dt-chg></span>"
+             "<span class=muted id=dt-ba></span></div>"
+             "<svg id=dt-chart role=img aria-label='30 minute candle chart'></svg>"
+             "<div class=dt-head style='margin-top:6px'><span class=muted id=dt-ohlc></span>"
+             "<span class='muted right' style='margin-left:auto'><span id=dt-status></span> · <span id=dt-next></span></span></div>"
+             "</section>")
+    html_ = page("Day trader", f"<style>{DT_CSS}</style>" + search + chart, active="Day trader").body.decode()
+    html_ = html_.replace("<body>", f"<body data-root='{esc(B)}'>", 1).replace("</body>", f"<script>{DT_JS}</script></body>", 1)
+    return HTMLResponse(html_)
+
+
+@app.get("/daytrader/search")
+def daytrader_search(q: str = ""):
+    try:
+        return daytrader.search(q)
+    except Exception as e:  # noqa: BLE001
+        raise HTTPException(502, f"eToro search failed: {str(e)[:200]}")
+
+
+@app.get("/daytrader/candles/{iid}")
+def daytrader_candles(iid: int):
+    try:
+        return daytrader.chart(iid)
+    except Exception as e:  # noqa: BLE001
+        raise HTTPException(502, f"eToro price data failed: {str(e)[:200]}")
 
 
 @app.post("/cancel/{pid}")

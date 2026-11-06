@@ -1685,3 +1685,39 @@ def test_watchlist_term_toggle_and_opportunity_short_tag(eng, monkeypatch):
         assert terms.term("META") == "short" and "short term</span>" in c.get("/settings").text
         c.post("/watchlist/remove", data={"symbol": "META"})
         assert terms.term("META") == "medium"                              # removing forgets the tag
+
+
+def test_daytrader_buckets_and_merge():
+    from app import daytrader as dt
+    w = {"buckets": {}}
+    base = 1_800_000_000 // 30 * 30            # on a 30 s boundary
+    for off, px in [(0, 10), (5, 12), (10, 9), (25, 11), (30, 11.5), (40, 13)]:
+        dt.add_sample(w, base + off, px)
+    assert w["buckets"][base] == [10, 12, 9, 11]          # open, high, low, close
+    assert w["buckets"][base + 30] == [11.5, 13, 11.5, 13]
+    iso = lambda t: datetime.fromtimestamp(t, timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
+    hist = [{"date": iso(base - 60 * k), "open": 1, "high": 2, "low": 0.5, "close": 1.5} for k in range(40, -1, -1)]
+    out = dt.merge(hist, w["buckets"], base + 60)
+    assert all(c["t"] + c["d"] > base + 60 - dt.WINDOW for c in out)       # only the last 30 minutes
+    assert [c["d"] for c in out[-2:]] == [30, 30]                          # live candles last
+    assert all(c["t"] + 60 <= base for c in out if c["d"] == 60)          # history stops where live starts
+    # old buckets fall out of the window
+    dt.add_sample(w, base + dt.WINDOW + 120, 14)
+    assert base not in w["buckets"]
+
+
+def test_daytrader_page_and_api(eng, monkeypatch):
+    engine, store, sent, fs, rating = eng
+    from fastapi.testclient import TestClient
+    from app import web, daytrader
+    importlib.reload(web)
+    monkeypatch.setattr(web.sched, "start", lambda: None)
+    monkeypatch.setattr(daytrader, "search", lambda q: [{"instrumentId": 1137, "symbol": "NVDA", "name": "NVIDIA", "type": "Stocks"}])
+    monkeypatch.setattr(daytrader, "chart", lambda iid: {"instrumentId": iid, "candles": [], "open": False})
+    with TestClient(web.app) as c:
+        r = c.get("/daytrader")
+        assert r.status_code == 200 and "Day trader" in r.text and "dt-chart" in r.text and "data-root" in r.text
+        assert c.get("/daytrader/search?q=nvd").json()[0]["symbol"] == "NVDA"
+        assert c.get("/daytrader/candles/1137").json()["instrumentId"] == 1137
+        assert "Day trader" in c.get("/").text                     # in the top menu
+    assert not orders(fs)                                          # the page never trades
