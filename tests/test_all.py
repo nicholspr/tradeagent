@@ -1716,7 +1716,7 @@ def test_daytrader_page_and_api(eng, monkeypatch):
     monkeypatch.setattr(daytrader, "chart", lambda iid: {"instrumentId": iid, "candles": [], "open": False})
     with TestClient(web.app) as c:
         r = c.get("/daytrader")
-        assert r.status_code == 200 and "Day trader" in r.text and "dt-chart" in r.text and "data-root" in r.text
+        assert r.status_code == 200 and "Day trader" in r.text and "dt-openbtn" in r.text and "data-root" in r.text
         assert c.get("/daytrader/search?q=nvd").json()[0]["symbol"] == "NVDA"
         assert c.get("/daytrader/candles/1137").json()["instrumentId"] == 1137
         assert "Open paper trades" in r.text and "Closed paper trades" in r.text and "breakEven" in r.text

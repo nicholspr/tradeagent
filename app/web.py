@@ -1075,8 +1075,6 @@ border-radius:10px;max-height:340px;overflow:auto;display:none;box-shadow:0 8px 
 .dt-results b{min-width:84px}.dt-results span{color:var(--muted);font-size:12px}
 .dt-head{display:flex;flex-wrap:wrap;gap:6px 18px;align-items:baseline;margin-bottom:8px}
 .dt-head .dt-px{font-size:26px;font-weight:700}.dt-up{color:#22c55e}.dt-dn{color:#ef4444}
-#dt-chart{width:100%;height:220px;display:block;touch-action:none}
-#dt-chart text{fill:var(--muted);font-size:11px}
 .dt-chartcard{grid-column:span 12}.dt-paper{grid-column:span 8}.dt-side{grid-column:span 4}
 @media(max-width:1100px){.dt-paper,.dt-side{grid-column:span 12}}
 .dt-pchart{width:100%;height:220px;display:block;margin:6px 0}.dt-pchart text{fill:var(--muted);font-size:11px}
@@ -1095,14 +1093,14 @@ border-radius:10px;max-height:340px;overflow:auto;display:none;box-shadow:0 8px 
 .dt-paper button.sm{min-height:30px;padding:5px 14px;font-size:13px}
 .dt-last{margin-top:16px;padding-top:12px;border-top:1px solid var(--line)}
 .dt-set{display:grid;grid-template-columns:1fr 1fr;gap:8px;margin-top:10px}
-@media(max-width:700px){#dt-chart,.dt-pchart{height:200px}}
+@media(max-width:700px){.dt-pchart{height:200px}}
 """
 
 DT_JS = """
 (()=>{
 const B=document.body.dataset.root||'';
 const $=id=>document.getElementById(id);
-let cur=null,data=null,timer=null,next=0,hover=null;
+let cur=null,data=null,timer=null,next=0;
 const fmt=v=>v==null?'–':(Math.abs(v)>=1000?v.toLocaleString(undefined,{minimumFractionDigits:2,maximumFractionDigits:2})
   :Math.abs(v)>=1?v.toFixed(Math.abs(v)>=100?2:3):String(+v.toPrecision(4)));
 const hm=t=>new Date(t*1000).toLocaleTimeString('en-GB',{hour:'2-digit',minute:'2-digit'});
@@ -1128,7 +1126,7 @@ function pick(it){cur=it;res.style.display='none';box.value='';
   try{localStorage.setItem('dt-cur',JSON.stringify(it));}catch(e){}
   history.replaceState(null,'','?iid='+it.instrumentId);
   $('dt-card').style.display='';$('dt-sym').textContent=it.symbol;$('dt-name').textContent=it.name;
-  data=null;draw();load();if(typeof poll==='function'){paint();poll();}}
+  data=null;$('dt-px').textContent='–';$('dt-chg').textContent='';$('dt-ba').textContent='';load();if(typeof poll==='function'){paint();poll();}}
 // ---- data
 function load(){if(!cur)return;clearTimeout(timer);$('dt-status').textContent='Updating…';
   fetch(B+'/daytrader/candles/'+cur.instrumentId).then(r=>{if(!r.ok)throw new Error(r.status);return r.json();})
@@ -1174,9 +1172,8 @@ function posLines(p,many){const tag=many?' ('+hm(p.t)+')':'',be=breakEven(p);
   return [{v:p.ask,c:C_BUY,label:'Paper buy '+fmt(p.ask)+tag},{v:be,c:C_TGT,label:'Target (covers fees) '+fmt(be)+tag}];}
 function lastLine(d,q){const cs=d.candles;const v=q&&(d.open||!cs.length)?q.bid:(cs.length?cs[cs.length-1].c:null);
   return v==null?[]:[{v,c:C_LAST,dash:'4 3'}];}
-function draw(){const svg=$('dt-chart'),W=svg.clientWidth||800,H=svg.clientHeight||220;
-  svg.setAttribute('viewBox','0 0 '+W+' '+H);
-  if(!data){svg.innerHTML='<text x=\"12\" y=\"24\">Loading…</text>';return;}
+function draw(){
+  if(!data)return;
   const q=data.quote,cs=data.candles;
   if(data.symbol&&cur){$('dt-sym').textContent=data.symbol;if(data.name)$('dt-name').textContent=data.name;
     if(cur.symbol!==data.symbol){cur.symbol=data.symbol;cur.name=data.name||cur.name;try{localStorage.setItem('dt-cur',JSON.stringify(cur));}catch(e){}}}
@@ -1189,18 +1186,8 @@ function draw(){const svg=$('dt-chart'),W=svg.clientWidth||800,H=svg.clientHeigh
   if(cs.length&&q){const a=cs[0].o,b=data.open?q.bid:cs[cs.length-1].c,p=(b-a)/a*100;
     ch.textContent=(p>=0?'+':'')+fmt(b-a)+' ('+(p>=0?'+':'')+p.toFixed(2)+'%) over 30 min';ch.className=p>=0?'dt-up':'dt-dn';}
   else ch.textContent='';
-  const mine=typeof open_!=='undefined'?open_.filter(p=>p.iid===data.instrumentId):[];
-  const lines=lastLine(data,q).concat(...mine.map(p=>posLines(p,mine.length>1)));
-  const t1=data.end,t0=t1-data.window,L=8,pw=W-8-74;
-  let hx=null;if(hover!=null){const c=cs.find(c=>hover>=c.t&&hover<c.t+c.d);
-    if(c){hx=c.t+c.d/2;$('dt-ohlc').textContent=hms(c.t)+' ('+(c.d===60?'1 min':'30 s')+')  O '+fmt(c.o)+'  H '+fmt(c.h)+'  L '+fmt(c.l)+'  C '+fmt(c.c);}}
-  if(hx==null)$('dt-ohlc').textContent='Hover or tap a candle for its prices';
-  svg.innerHTML=render(W,H,cs,{t0,t1,bucket:data.bucket,lines,hoverX:hx});
-  svg.onpointermove=e=>{const r=svg.getBoundingClientRect(),x=(e.clientX-r.left)*(W/r.width);hover=t0+(x-L)/pw*(t1-t0);draw();};
-  svg.onpointerleave=()=>{hover=null;draw();};
-  if(typeof posData!=='undefined')posData[data.instrumentId]=data;}
+  if(typeof posData!=='undefined'){posData[data.instrumentId]=data;if(typeof paint==='function')paint();}}
 function nice(x){const p=Math.pow(10,Math.floor(Math.log10(x))),f=x/p;return (f<1.5?1:f<3?2:f<7?5:10)*p;}
-addEventListener('resize',draw);
 
 // ---- paper trades (several can be open at once)
 const AMT=100;
@@ -1328,10 +1315,10 @@ else if(want)pick({instrumentId:+want,symbol:'#'+want,name:''});
 @app.get("/daytrader", response_class=HTMLResponse)
 def daytrader_page():
     search = card("Day trader (test)",
-                  "<p class=muted>Pick any eToro instrument to watch a live 30-minute candle chart, and try theoretical $100 paper "
-                  "trades beside it, as many at once as you like. Nothing is ever sent to eToro from this page. eToro's smallest candle is 1 minute, "
-                  "so the chart starts with 1-minute candles (paler) and 30-second candles, built from the live price sampled "
-                  "every 5 seconds, take over while the page is open. It updates every 30 seconds.</p>"
+                  "<p class=muted>Pick any eToro instrument to see its live price and open theoretical $100 paper trades, "
+                  "as many at once as you like. Nothing is ever sent to eToro from this page. Each open trade gets its own "
+                  "live 30-minute candle chart: eToro's smallest candle is 1 minute, so it starts with 1-minute candles (paler) "
+                  "and 30-second candles, built from the live price sampled every 5 seconds, take over while the page is open.</p>"
                   "<div class=dt-search><label>Symbol or name</label>"
                   "<input id=dt-q autocomplete=off placeholder='e.g. NVDA, Tesla, BTC, IUCS.L'>"
                   "<div class=dt-results id=dt-results></div></div>")
@@ -1340,9 +1327,7 @@ def daytrader_page():
              "<span class=pill id=dt-live></span><button id=dt-openbtn>Open $100 paper buy</button></div>"
              "<div class=dt-head><span class=dt-px id=dt-px>–</span><span id=dt-chg></span>"
              "<span class=muted id=dt-ba></span></div>"
-             "<svg id=dt-chart role=img aria-label='30 minute candle chart'></svg>"
-             "<div class=dt-head style='margin-top:6px'><span class=muted id=dt-ohlc></span>"
-             "<span class='muted right' style='margin-left:auto'><span id=dt-status></span> · <span id=dt-next></span></span></div>"
+             "<div class=dt-head><span class=muted id=dt-status></span><span class=muted>· <span id=dt-next></span></span></div>"
              "</section>"
              "<section class='card dt-paper' id=dt-paper><h2>Open paper trades (theoretical)</h2><div id=dt-pbody></div></section>"
              "<section class='card dt-side'><h2>Closed paper trades</h2><div id=dt-hist></div>"
