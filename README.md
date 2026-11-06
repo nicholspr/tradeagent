@@ -212,7 +212,15 @@ The top menu has **Overview, Opportunities, Scorecard, Logs and Settings**. The 
 - **Reject** a pending proposal.
 
 ### Opportunities
-- **The scan:** Claude, using the Opportunities model and live web search (up to 8 searches), proposes 5 trading ideas with a thesis, catalyst, risks and sources.
+- **The scan:** Claude, using the Opportunities model and live web search (up to 8 searches), proposes 5 ideas to buy and hold for the **medium term (about 1–6 months)**. Each comes with a sector, thesis, catalyst, risks, horizon and sources.
+- **What the prompt is told:**
+  - that this is a **UK account**, so no US-listed ETFs (they are CFD-only here); funds are London UCITS `.L` symbols instead;
+  - buys only and unleveraged;
+  - your **Max per trade**, position cap and free cash;
+  - your **current holdings** with their share of the portfolio, and your watchlist;
+  - that at least **2 of the 5** ideas must be outside technology and semiconductors, because the portfolio is already concentrated there.
+
+  Any US-listed fund that gets through anyway is tagged as CFD-only.
 - **Checking the ideas:** every idea must cite a source that the search actually returned, and each one is checked against eToro (found, tradable, price).
 - **Adding to the watchlist:** **Watch** adds an idea to the watchlist in the right format.
 - **Limits:** at most **3 scans a day**. The page never places or queues a trade.
@@ -325,7 +333,7 @@ Removing an entry does not sell it; holdings stay until sold. London (`.L`) inst
 
 ```bash
 pip install -r requirements.txt
-python -m pytest -q tests          # 61 tests, all offline (fakes for eToro, Claude, email)
+python -m pytest -q tests          # 62 tests, all offline (fakes for eToro, Claude, email)
 DATA_DIR=./data uvicorn app.web:app --reload
 ```
 

@@ -972,7 +972,12 @@ def opportunity_card(o: dict, watched: set[str]) -> str:
     return (f"<section class='card c12'><h2>{esc(o['symbol'])} <span class=muted>{esc(o['name'])}</span>"
             f"<span class=right>{etoro_pill(o.get('etoro'))}</span></h2>"
             f"<p><span class=pill>{esc(o['asset_type'] or 'asset')}</span> "
-            f"<span class=pill>horizon: {esc(o['horizon'] or 'n/a')}</span></p>"
+            f"<span class=pill>horizon: {esc(o['horizon'] or 'n/a')}</span>"
+            + (f" <span class=pill>{esc(o['sector'])}</span>" if o.get("sector") else "")
+            + (" <span class='pill warn'>US-listed fund: CFD-only on a UK account</span>"
+               if "etf" in str((o.get("etoro") or {}).get("asset_class") or o.get("asset_type") or "").lower()
+               and not o["symbol"].endswith(".L") else "")
+            + "</p>"
             f"<p><b>Why:</b> {esc(o['thesis'])}</p><p><b>Catalyst:</b> {esc(o['catalyst'])}</p>"
             f"<p><b>Risks:</b> {esc(o['risks'])}</p><p class=muted>Sources</p><ul>{srcs}</ul>{act}</section>")
 

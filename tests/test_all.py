@@ -1597,3 +1597,20 @@ def test_watchlist_editor_add_checks_etoro_and_delete(eng, monkeypatch):
         before = store.get_settings()["watchlist"]
         assert c.post("/settings", data=good, follow_redirects=False).status_code == 303
         assert store.get_settings()["watchlist"] == before
+
+
+def test_opportunity_prompt_has_account_context_and_medium_horizon(eng):
+    engine, store, sent, fs, rating = eng
+    from app import opportunities
+    from app.etoro import Book, Holding
+    s = {**store.get_settings(), "watchlist": "META,IUHC.L,BTC=BTC-USD@crypto", "max_trade_usd": "75", "max_position_pct": "25"}
+    book = Book(cash_usd=419.58, total_usd=800.0, holdings={
+        1: Holding(1, "META", units=0.12, value_usd=80.0), 2: Holding(2, "MU", units=0.08, value_usd=64.0)})
+    p = opportunities.build_prompt(s, book, today="2026-11-06")
+    assert "medium term (about 1-6 months)" in p and "next days to weeks" not in p
+    assert "UK eToro account" in p and "do NOT suggest them" in p and "IUHC.L" in p
+    assert "at most $75" in p and "25% of the portfolio" in p and "$420 cash" in p
+    assert "META 10%, MU 8%" in p and "Already on the watchlist: META, IUHC.L, BTC" in p
+    assert "At least 2 of the 5" in p and "outside technology and semiconductors" in p
+    assert "Buys only, unleveraged" in p and '"sector"' in p
+    assert "{" not in opportunities.build_prompt(s, None, today="x").split("Return ONLY")[0]   # all placeholders filled
