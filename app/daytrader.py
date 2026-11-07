@@ -2,7 +2,7 @@
 
 eToro's smallest candle is one minute, so 30-second candles are built here by sampling the
 live bid every few seconds while someone has the chart open. The chart starts from the last
-30 one-minute candles from eToro, and live 30-second candles take over as they form.
+hour of one-minute candles from eToro, and live 30-second candles take over as they form.
 Sampling stops on its own a couple of minutes after the page is closed.
 """
 import threading
@@ -12,7 +12,7 @@ from datetime import datetime, timezone
 from . import engine, store, strategy
 
 BUCKET = 30            # seconds per live candle
-WINDOW = 30 * 60       # seconds shown on the chart
+WINDOW = 60 * 60       # seconds shown on the chart (1 hour)
 SAMPLE_EVERY = 5       # seconds between live price samples
 IDLE_AFTER = 120       # stop sampling an instrument nobody has asked about for this long
 STALE_AFTER = 120      # a quote older than this means the market is closed
@@ -125,7 +125,7 @@ def watch(iid: int) -> None:
 
 def merge(history: list[dict], buckets: dict, end: float) -> list[dict]:
     """One-minute history up to where live 30-second candles begin, then the live candles,
-    trimmed to the 30 minutes ending at `end`. Each candle: t (epoch s), d (seconds), o h l c."""
+    trimmed to the WINDOW (1 hour) ending at `end`. Each candle: t (epoch s), d (seconds), o h l c."""
     live = [{"t": k, "d": BUCKET, "o": b[0], "h": b[1], "l": b[2], "c": b[3]} for k, b in sorted(buckets.items())]
     first_live = live[0]["t"] if live else float("inf")
     hist = []
@@ -198,7 +198,7 @@ def chart(iid: int, hurdle_pct: float | None = None) -> dict:
     watch(iid)
     ec = engine.client()
     long = _cached(("hist", iid), 25, lambda: ec.candles(iid, "OneMinute", 300))
-    history = long[-40:]
+    history = long[-70:]
     with _lock:
         w = _watch.get(iid) or {"buckets": {}, "quote": None}
         buckets = {k: list(v) for k, v in w["buckets"].items()}

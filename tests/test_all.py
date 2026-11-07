@@ -1721,6 +1721,11 @@ def test_daytrader_page_and_api(eng, monkeypatch):
         assert c.get("/daytrader/candles/1137").json()["instrumentId"] == 1137
         assert c.get("/daytrader/candles/1137?hurdle=2.02").json()["hurdle"] == 2.02
         assert "Open paper trades" in r.text and "Closed paper trades" in r.text and "breakEven" in r.text
+        assert "Strategy auto-test" in r.text
+        assert c.get("/daytrader/autotest").json()["total"]["trades"] == 0
+        assert any(x["iid"] == 1137 and x["kind"] == "stock" for x in
+                   c.post("/daytrader/autotest/add", json={"iid": 1137, "symbol": "NVDA", "kind": "stock"}).json()["symbols"])
+        assert all(x["iid"] != 1137 for x in c.post("/daytrader/autotest/remove", json={"iid": 1137}).json()["symbols"])
         assert "Day trader" in c.get("/").text                     # in the top menu
     assert not orders(fs)                                          # the page never trades
 
@@ -1832,5 +1837,76 @@ def test_daytrader_chart_includes_signal_and_cfd_kind(monkeypatch):
     assert d["kind"] == "cfd" and d["symbol"] == "TSLA.24-7"
     assert d["signal"]["state"] == "avoid"                                   # never buy a downtrend
     assert abs(d["signal"]["hurdle_pct"] - 0.11) < 0.01                      # spread (0.1/88) added to the fees
-    assert len(d["candles"]) <= 31                                          # chart still shows only 30 minutes
+    assert 50 <= len(d["candles"]) <= 61                                    # chart shows the last hour
     dt._cache.clear()
+
+
+def test_autotest_opens_on_signal_and_closes_at_stop_target_or_time(eng, monkeypatch):
+    import math, time as _t, importlib as _il
+    engine, store, sent, fs, rating = eng
+    from app import autotest, daytrader, strategy
+    _il.reload(autotest)
+    now = _t.time()
+    t0 = int(now // 60 * 60) - 299 * 60
+    iso = lambda t: datetime.fromtimestamp(t, timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
+
+    def dip(i):
+        p = 100 * (1 + 0.0004 * i) + 0.05 * math.sin(i / 3)
+        if i >= 290:
+            p -= (min(i, 297) - 290) * 0.15
+        if i >= 298:
+            p += (i - 297) * 0.03
+        return p
+    state = {"extra": [], "bid": None}
+
+    class C:
+        def candles(self, iid, interval, count):
+            out, prev = [], dip(0)
+            for i in range(count):
+                c = dip(i)
+                out.append({"date": iso(t0 + 60 * i), "open": prev, "high": max(prev, c) * 1.0008, "low": min(prev, c) * 0.9992, "close": c})
+                prev = c
+            return out + state["extra"]
+
+        def live_rates(self, ids):
+            b = state["bid"] if state["bid"] is not None else dip(299)
+            return {i: {"bid": b, "ask": b * 1.0001, "date": iso(now)} for i in ids}
+
+        rates = live_rates
+
+    monkeypatch.setattr(engine, "client", lambda: C())
+    daytrader._cache.clear()
+    with store._lock, store.connect() as c:                     # test with one CFD only (spread-only costs)
+        c.executescript(autotest.CREATE)
+        c.execute("INSERT OR IGNORE INTO autotest_meta(key, value) VALUES ('seeded','x')")
+    autotest.add_symbol(15200, "TSLA.24-7", "cfd")
+    autotest.tick()
+    s = autotest.summary()
+    assert len(s["open"]) == 1 and s["symbols"][0]["last_state"] == "enter"
+    t = s["open"][0]
+    assert t["stop"] < t["entry"] < t["target"]
+    daytrader._cache.clear()
+    autotest.tick()                                              # still Entry now: no second trade in the same symbol
+    assert len(autotest.summary()["open"]) == 1
+
+    # a later 1-minute candle touches the stop -> closed at the stop price
+    state["extra"] = [{"date": iso(t0 + 60 * 301), "open": t["entry"], "high": t["entry"], "low": t["stop"] * 0.999, "close": t["stop"]}]
+    state["bid"] = t["stop"] * 1.0005
+    daytrader._cache.clear()
+    autotest.tick()
+    s = autotest.summary()
+    closed = s["closed"][0]
+    assert closed["reason"] == "stop" and closed["exit"] == t["stop"] and closed["net"] < 0
+    assert s["total"]["trades"] == 1 and s["total"]["stops"] == 1
+
+    # check_exit directly: target, and the time limit
+    tr = {"opened_ts": 1000.0, "stop": 90.0, "target": 110.0}
+    assert autotest.check_exit(tr, [{"t": 1080, "l": 95, "h": 111}], 100, True, 2000) == ("target", 110.0)
+    assert autotest.check_exit(tr, [{"t": 1080, "l": 89, "h": 111}], 100, True, 2000) == ("stop", 90.0)   # both: stop first
+    assert autotest.check_exit(tr, [{"t": 1000, "l": 80, "h": 120}], 100, True, 2000) is None            # entry minute ignored
+    assert autotest.check_exit(tr, [], 100, True, 1000 + 4 * 3600)[0].startswith("time limit")
+    assert autotest.costs("crypto", "BTC", 100, 100, 102)["fees"] == 2.02
+
+    autotest.remove_symbol(15200)
+    assert autotest.summary()["symbols"] == []
+    daytrader._cache.clear()

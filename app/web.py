@@ -12,7 +12,7 @@ from apscheduler.triggers.cron import CronTrigger
 from fastapi import FastAPI, Form, HTTPException, Request
 from fastapi.responses import HTMLResponse, RedirectResponse
 
-from . import daytrader, performance, scorecard, terms, config, engine, markets, opportunities, policy, store
+from . import autotest, daytrader, performance, scorecard, terms, config, engine, markets, opportunities, policy, store
 
 sched = BackgroundScheduler(timezone=config.TZ)
 
@@ -54,6 +54,8 @@ def schedule_jobs() -> None:
                   id="summary", replace_existing=True)
     sched.add_job(engine.check_levels, CronTrigger(hour=6, minute=30), id="levels",
                   replace_existing=True, max_instances=1)
+    sched.add_job(autotest.tick, "interval", minutes=1, id="autotest", replace_existing=True,
+                  max_instances=1, coalesce=True)
 
 
 @asynccontextmanager
@@ -1098,6 +1100,10 @@ border-radius:10px;max-height:340px;overflow:auto;display:none;box-shadow:0 8px 
 .dt-sig ul{margin:6px 0 0;padding-left:18px;font-size:12px;color:var(--muted)}.dt-sig details summary{font-size:12px;margin-top:6px}
 .dt-psig{font-size:12px;margin:4px 0}.dt-psig .sp{font-weight:700;font-size:11px;padding:1px 8px;border-radius:999px;margin-right:6px}
 .dt-toast{position:fixed;right:16px;bottom:16px;z-index:50;background:#14532d;color:#fff;border:1px solid #22c55e;border-radius:12px;padding:12px 16px;max-width:340px;box-shadow:0 8px 24px #0009;font-size:14px}
+.dt-auto{grid-column:span 12}.dt-tiles{display:grid;grid-template-columns:repeat(auto-fit,minmax(130px,1fr));gap:10px;margin:10px 0 14px}
+.dt-tiles div{background:#0f131a;border:1px solid var(--line);border-radius:10px;padding:10px 12px}.dt-tiles span{display:block;font-size:12px;color:var(--muted)}
+.dt-tiles b{font-size:20px;font-variant-numeric:tabular-nums}.dt-auto h3{margin:16px 0 6px}.dt-auto td{font-variant-numeric:tabular-nums}
+.dt-auto .sp{font-weight:700;font-size:11px;padding:1px 8px;border-radius:999px;margin-right:6px;white-space:nowrap}
 .dt-set{display:grid;grid-template-columns:1fr 1fr;gap:8px;margin-top:10px}
 @media(max-width:700px){.dt-pchart{height:200px}}
 """
@@ -1132,7 +1138,7 @@ function pick(it){cur=it;res.style.display='none';box.value='';
   try{localStorage.setItem('dt-cur',JSON.stringify(it));}catch(e){}
   history.replaceState(null,'','?iid='+it.instrumentId);
   $('dt-card').style.display='';$('dt-sym').textContent=it.symbol;$('dt-name').textContent=it.name;
-  data=null;$('dt-px').textContent='–';$('dt-chg').textContent='';$('dt-ba').textContent='';load();if(typeof poll==='function'){paint();poll();}}
+  if(typeof autoPaint==='function')autoPaint();data=null;$('dt-px').textContent='–';$('dt-chg').textContent='';$('dt-ba').textContent='';load();if(typeof poll==='function'){paint();poll();}}
 // ---- data
 function load(){if(!cur)return;clearTimeout(timer);$('dt-status').textContent='Updating…';
   fetch(B+'/daytrader/candles/'+cur.instrumentId+hurdleQ(data&&data.instrumentId===cur.instrumentId?data.kind:null,cur.symbol)).then(r=>{if(!r.ok)throw new Error(r.status);return r.json();})
@@ -1146,7 +1152,7 @@ const C_LAST='#3b82f6',C_BUY='#f59e0b',C_TGT='#c084fc';
 // stretches to include every line, so buy and target levels are never off the chart.
 function render(W,H,cs,o){
   const L=8,R=74,T=10,Bm=24,pw=W-L-R,ph=H-T-Bm,t0=o.t0,t1=o.t1,lines=o.lines||[];
-  if(!cs.length&&!lines.length)return '<text x=\"12\" y=\"24\">No price data in the last 30 minutes.</text>';
+  if(!cs.length&&!lines.length)return '<text x=\"12\" y=\"24\">No price data in the last hour.</text>';
   let lo=Infinity,hi=-Infinity;cs.forEach(c=>{lo=Math.min(lo,c.l);hi=Math.max(hi,c.h);});
   lines.forEach(l=>{lo=Math.min(lo,l.v);hi=Math.max(hi,l.v);});
   const pad=(hi-lo)*0.08||hi*0.001||1;lo-=pad;hi+=pad;
@@ -1158,7 +1164,7 @@ function render(W,H,cs,o){
   const step=nice((hi-lo)/(H<260?4:5));for(let v=Math.ceil(lo/step)*step;v<=hi;v+=step){const y=Y(v);
     g+='<line x1=\"'+L+'\" x2=\"'+(L+pw)+'\" y1=\"'+y+'\" y2=\"'+y+'\" stroke=\"#262c37\"/>'
      +(tags.some(t=>Math.abs(t.y-y)<14)?'':'<text x=\"'+(L+pw+6)+'\" y=\"'+(y+4)+'\">'+fmt(v)+'</text>');}
-  const xs=pw<520?600:300;for(let t=Math.ceil(t0/xs)*xs;t<=t1;t+=xs){const x=X(t);
+  const xs=pw<520?900:600;for(let t=Math.ceil(t0/xs)*xs;t<=t1;t+=xs){const x=X(t);
     g+='<line x1=\"'+x+'\" x2=\"'+x+'\" y1=\"'+T+'\" y2=\"'+(T+ph)+'\" stroke=\"#1f242e\"/>'
      +(x-L<18||L+pw-x<18?'':'<text x=\"'+x+'\" y=\"'+(H-7)+'\" text-anchor=\"middle\">'+hm(t)+'</text>');}
   cs.forEach(c=>{const col=c.c>=c.o?'#22c55e':'#ef4444',x0=X(Math.max(c.t,t0)),x1=X(c.t+c.d),
@@ -1190,7 +1196,7 @@ function draw(){
   $('dt-status').textContent='Updated '+hms(data.serverTime);
   const ch=$('dt-chg');
   if(cs.length&&q){const a=cs[0].o,b=data.open?q.bid:cs[cs.length-1].c,p=(b-a)/a*100;
-    ch.textContent=(p>=0?'+':'')+fmt(b-a)+' ('+(p>=0?'+':'')+p.toFixed(2)+'%) over 30 min';ch.className=p>=0?'dt-up':'dt-dn';}
+    ch.textContent=(p>=0?'+':'')+fmt(b-a)+' ('+(p>=0?'+':'')+p.toFixed(2)+'%) over 1 hour';ch.className=p>=0?'dt-up':'dt-dn';}
   else ch.textContent='';
   $('dt-sig').innerHTML=sigBox(data.signal,false,data.symbol||(cur&&cur.symbol));watchSig(data);
   if(typeof posData!=='undefined'){posData[data.instrumentId]=data;if(typeof paint==='function')paint();}}
@@ -1339,6 +1345,42 @@ function paint(){const el=$('dt-pbody');if(!el)return;const now=Date.now()/1000;
 setInterval(()=>{if(open_.length)paint();},1000);
 addEventListener('resize',()=>paint());
 alertLink();
+// ---- strategy auto-test (server side)
+let auto=null,atimer=null;
+function autoLoad(){clearTimeout(atimer);fetch(B+'/daytrader/autotest').then(r=>r.ok?r.json():null).then(d=>{if(d){auto=d;autoPaint();}})
+  .catch(()=>{}).finally(()=>{atimer=setTimeout(autoLoad,30000);});}
+function autoPost(path,body){fetch(B+'/daytrader/autotest/'+path,{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify(body)})
+  .then(r=>r.ok?r.json():null).then(d=>{if(d){auto=d;autoPaint();}});}
+const REASON={stop:'Stop',target:'Target'};
+function autoPaint(){const el=$('dt-auto');if(!el||!auto)return;const T=auto.total,now=Date.now()/1000;
+  const tbl=(head,rows)=>'<div class=tbl><table><tr>'+head.map(h=>'<th>'+h+'</th>').join('')+'</tr>'+rows.join('')+'</table></div>';
+  let h='<div class=dt-tiles><div><span>Closed trades</span><b>'+T.trades+'</b></div>'
+    +'<div><span>In profit after fees</span><b>'+(T.trades?Math.round(T.wins/T.trades*100)+'%':'–')+'</b></div>'
+    +'<div><span>Targets / stops / time</span><b>'+T.targets+' / '+T.stops+' / '+(T.trades-T.targets-T.stops)+'</b></div>'
+    +'<div><span>Price moves (gross)</span><b class=\"'+cls(T.gross)+'\">'+sgn(T.gross)+'</b></div>'
+    +'<div><span>Fees paid</span><b>'+money(T.fees)+'</b></div>'
+    +'<div><span>Total net</span><b class=\"'+cls(T.net)+'\">'+sgn(T.net)+'</b></div></div>';
+  const inList=cur&&auto.symbols.some(x=>x.iid===cur.instrumentId);
+  h+='<h3>Symbols being tested</h3>'+(auto.symbols.length?tbl(['Symbol','Signal now','Checked',''],auto.symbols.map(x=>'<tr><td><b>'+x.symbol+'</b></td><td>'
+      +(x.last_state?sigPill(x.last_state==='error'?'nodata':x.last_state)+'<span class=muted>'+(x.last_headline||'')+'</span>':'<span class=muted>waiting for the first check</span>')
+      +'</td><td>'+(x.last_checked?hm(Date.parse(x.last_checked)/1000):'–')+'</td><td><a href=\"#\" data-arm=\"'+x.iid+'\">remove</a></td></tr>'))
+    :'<p class=muted>No symbols yet.</p>')
+    +(cur&&!inList?'<button class=sec id=dt-aadd style=\"margin-top:8px\">Add '+cur.symbol+' to the auto-test</button>':'');
+  h+='<h3>Open auto-test trades ('+auto.open.length+')</h3>'+(auto.open.length?tbl(['Symbol','Opened','Entry (ask)','Stop','Target','Now (bid)','Net if closed'],
+      auto.open.map(t=>'<tr><td>'+t.symbol+'</td><td>'+hm(t.opened_ts)+' · '+dur(now-t.opened_ts)+'</td><td>'+fmt(t.entry)+'</td><td>'+fmt(t.stop)+'</td><td>'+fmt(t.target)+'</td><td>'
+        +(t.last_bid?fmt(t.last_bid):'–')+'</td><td class=\"'+(t.net!=null?cls(t.net):'')+'\">'+(t.net!=null?sgn(t.net):'–')+'</td></tr>'))
+    :'<p class=muted>None open. One opens as soon as a tested symbol signals Entry now.</p>');
+  if(auto.by_symbol.length)h+='<h3>Results by symbol</h3>'+tbl(['Symbol','Trades','In profit','Price moves','Fees','Net'],auto.by_symbol.map(b=>'<tr><td>'+b.symbol+'</td><td>'+b.trades+'</td><td>'
+      +Math.round(b.wins/b.trades*100)+'%</td><td class=\"'+cls(b.gross)+'\">'+sgn(b.gross)+'</td><td>'+money(b.fees)+'</td><td class=\"'+cls(b.net)+'\">'+sgn(b.net)+'</td></tr>'));
+  h+='<h3>Closed auto-test trades</h3>'+(auto.closed.length?tbl(['Symbol','Opened','Held','Exit','Entry → exit','Fees','Net'],auto.closed.map(t=>'<tr><td>'+t.symbol+'</td><td>'
+      +new Date(t.opened_ts*1000).toLocaleString('en-GB',{day:'numeric',month:'short',hour:'2-digit',minute:'2-digit'})+'</td><td>'+dur(t.closed_ts-t.opened_ts)+'</td><td>'
+      +(REASON[t.reason]||t.reason)+'</td><td>'+fmt(t.entry)+' → '+fmt(t.exit)+'</td><td>'+money(t.fees)+'</td><td class=\"'+cls(t.net)+'\">'+sgn(t.net)+'</td></tr>'))
+    :'<p class=muted>None yet.</p>');
+  el.innerHTML=h;
+  const ab=$('dt-aadd');if(ab)ab.onclick=()=>autoPost('add',{iid:cur.instrumentId,symbol:cur.symbol,kind:(data&&data.instrumentId===cur.instrumentId&&data.kind)||kindOf(cur.type,cur.symbol)});
+  el.querySelectorAll('[data-arm]').forEach(a=>a.onclick=e=>{e.preventDefault();const x=auto.symbols.find(s=>String(s.iid)===a.dataset.arm);
+    if(confirm('Stop auto-testing '+(x?x.symbol:'this symbol')+'?'+(auto.open.some(t=>String(t.iid)===a.dataset.arm)?' Its open trade will be closed at the last price.':'')))autoPost('remove',{iid:+a.dataset.arm});});}
+autoLoad();
 if(open_.length)loadPosCharts();
 // ---- start: ?iid= in the address, else the last symbol viewed
 let saved=null;try{saved=JSON.parse(localStorage.getItem('dt-cur')||'null');}catch(e){}
@@ -1355,7 +1397,7 @@ def daytrader_page():
     search = card("Day trader (test)",
                   "<p class=muted>Pick any eToro instrument to see its live price, an entry signal, and open theoretical $100 paper trades, "
                   "as many at once as you like. Nothing is ever sent to eToro from this page. Each open trade gets its own "
-                  "live 30-minute candle chart: eToro's smallest candle is 1 minute, so it starts with 1-minute candles (paler) "
+                  "live 1-hour candle chart: eToro's smallest candle is 1 minute, so it starts with 1-minute candles (paler) "
                   "and 30-second candles, built from the live price sampled every 5 seconds, take over while the page is open.</p>"
                   "<div class=dt-search><label>Symbol or name</label>"
                   "<input id=dt-q autocomplete=off placeholder='e.g. NVDA, Tesla, BTC, IUCS.L'>"
@@ -1381,7 +1423,13 @@ def daytrader_page():
              "of London-listed shares. ETFs and 24/7 CFDs (<code>.24-7</code> symbols): no commission, just the spread; CFD overnight fees are not included. Currency conversion applies only if your account currency "
              "differs from the asset's; 0 for a USD account trading USD assets. "
              "The <b>target</b> line is the price at which selling would exactly cover all of these costs.</p>"
-             "</details></section></div>")
+             "</details></section>"
+             "<section class='card dt-auto'><h2>Strategy auto-test (runs on the server, 24/7)</h2>"
+             "<p class=muted>Every minute the server checks each symbol below against the entry strategy. On every "
+             "<b>Entry now</b> it opens a theoretical $100 trade at the ask (one per symbol at a time) and closes it at the "
+             "signal's stop or target, or at the bid after 4 hours. Costs as above. Nothing is sent to eToro. "
+             "This keeps running with the page closed, so the results below show whether the signals make money after fees.</p>"
+             "<div id=dt-auto>Loading…</div></section></div>")
     html_ = page("Day trader", f"<style>{DT_CSS}</style>" + search + chart, active="Day trader").body.decode()
     html_ = html_.replace("<body>", f"<body data-root='{esc(B)}'>", 1).replace("</body>", f"<script>{DT_JS}</script></body>", 1)
     return HTMLResponse(html_)
@@ -1402,6 +1450,35 @@ def daytrader_quotes(ids: str = ""):
         return {str(k): v for k, v in daytrader.quotes(wanted).items()}
     except Exception as e:  # noqa: BLE001
         raise HTTPException(502, f"eToro prices failed: {str(e)[:200]}")
+
+
+@app.get("/daytrader/autotest")
+def daytrader_autotest():
+    return autotest.summary()
+
+
+@app.post("/daytrader/autotest/add")
+async def daytrader_autotest_add(request: Request):
+    b = await request.json()
+    try:
+        iid = int(b["iid"])
+    except (KeyError, TypeError, ValueError):
+        raise HTTPException(400, "iid required")
+    sym, kind = str(b.get("symbol") or f"#{iid}")[:40], str(b.get("kind") or "other")[:10]
+    if kind not in ("crypto", "stock", "etf", "cfd", "other"):
+        kind = "other"
+    autotest.add_symbol(iid, sym, kind)
+    return autotest.summary()
+
+
+@app.post("/daytrader/autotest/remove")
+async def daytrader_autotest_remove(request: Request):
+    b = await request.json()
+    try:
+        autotest.remove_symbol(int(b["iid"]))
+    except (KeyError, TypeError, ValueError):
+        raise HTTPException(400, "iid required")
+    return autotest.summary()
 
 
 @app.get("/daytrader/quote/{iid}")

@@ -235,7 +235,7 @@ The top menu has **Overview, Opportunities, Scorecard, Logs and Settings**. The 
 - **Limits:** at most **3 scans a day**. The page never places or queues a trade.
 
 ### Day trader (test)
-A first step towards intraday tools. Search for any eToro instrument by symbol or name to see its live price, then open paper trades in it. Each open paper trade has its own **30-minute candle chart** (time across, price up), refreshed every **30 seconds**.
+A first step towards intraday tools. Search for any eToro instrument by symbol or name to see its live price, then open paper trades in it. Each open paper trade has its own **1-hour candle chart** (time across, price up), refreshed every **30 seconds**.
 - eToro's smallest candle is 1 minute, so the app builds **30-second candles** itself by sampling the live bid every 5 seconds while the page is open. The chart starts with the last 30 minutes of 1-minute candles (drawn paler), and the live 30-second candles replace them as they form.
 - The card shows the bid, ask and spread, the change over the 30 minutes, and **Live** or **Market closed** (with the time of the last price). Hover over or tap a candle to see its open, high, low and close.
 - Sampling stops by itself about two minutes after you close the page, so it uses no eToro quota when nobody is watching. The last symbol is remembered, and `/daytrader?iid=<instrument id>` opens one directly.
@@ -252,6 +252,13 @@ A first step towards intraday tools. Search for any eToro instrument by symbol o
   4. **Fee filter:** the move to target must be at least 1.5 × the round-trip cost (eToro fees from the cost settings plus the live spread). If not, the verdict is **Fees too high** rather than a trade.
 
   Verdicts: Entry now, Wait, Avoid (no uptrend), Fees too high, Market closed. The symbol card shows the verdict, entry, stop, target, move-to-target vs costs, and a "Why" list of the readings behind it; each open trade shows a compact version, and its chart gets a green dotted **suggested entry** line. **Turn on entry alerts** shows a pop-up (and a browser notification, if you allow it) when any watched symbol changes to Entry now, while the page is open. It's a starting rule set to test with paper trades, not a proven edge. On crypto, eToro's 2% round trip means it will often say Fees too high; 24/7 CFDs (`.24-7` symbols, costed as spread only) and quieter fee-free assets are where it can fire.
+- **Strategy auto-test (server-side, 24/7).** A card at the bottom of the page tests the entry strategy on its own, with the page closed. Every minute the server checks each symbol on its list (`app/autotest.py`):
+  - on **Entry now**, it records a theoretical $100 buy at the live ask, one open trade per symbol at a time;
+  - it closes the trade at the signal's **stop** or **target**, checking every 1-minute candle since the entry (if one candle touched both, the stop is assumed first, the cautious choice), or at the bid after **4 hours**;
+  - costs follow the same eToro rules as the paper trades (share commission at the $1 default).
+
+  The card shows the current signal for each tested symbol, open auto-test trades with their live net, results by symbol, every closed trade with its exit reason, and totals: trades, % in profit after fees, targets/stops/time-outs, gross price moves, fees paid and total net. **Add <symbol> to the auto-test** puts the selected symbol on the list; **remove** takes one off (closing any open trade at the last price). It starts with BTC, SOL, SUI, AVAX, TSLA.24-7 and NVDA.24-7, a mix of 2%-fee crypto and spread-only CFDs, so the results show where the fee filter matters. Each check uses one eToro candle request per symbol (shared with the page's 25-second cache) plus one price request, well within eToro's limits.
+- Charts show the **last hour**: 1-minute candles from eToro, replaced by 30-second candles built from the live price while the page is open.
 - Nothing is ever sent to eToro from this page.
 
 ### Scorecard: does it work?
@@ -362,7 +369,7 @@ Removing an entry does not sell it; holdings stay until sold. London (`.L`) inst
 
 ```bash
 pip install -r requirements.txt
-python -m pytest -q tests          # 72 tests, all offline (fakes for eToro, Claude, email)
+python -m pytest -q tests          # 73 tests, all offline (fakes for eToro, Claude, email)
 DATA_DIR=./data uvicorn app.web:app --reload
 ```
 
@@ -376,6 +383,7 @@ On Windows, `run-local.bat` runs the full app at `http://localhost:8000/`. It al
 | `app/policy.py` | Watchlist parsing, rating → proposal, hard limits, approval rules, and the account-rules text. Pure functions, fully tested. |
 | `app/engine.py` | Analysis, proposals, approval, execution, the queue, scheduled runs, pre-flight, overrides, the daily summary, the audit trail and one-off fixes. |
 | `app/etoro.py` prices | `rates()` takes bid/ask from eToro's v2 rates endpoint whenever it is newer than v1 (v1 was seen returning crypto prices hours old); v1 still supplies the currency conversion rates. |
+| `app/autotest.py` | Server-side auto-test of the entry strategy: $100 paper trades on every Entry now, closed at stop/target/4 hours, every minute. |
 | `app/strategy.py` | Day trader entry signals: 5-min trend, 1-min pullback timing, ATR stop/target, fee filter. |
 | `app/daytrader.py` | Day trader test page: eToro instrument search, live price sampling and 30-second candles. |
 | `app/terms.py` | Holding period per symbol; the short-term agent note; stop-loss and take-profit extraction and sanity checks. |
