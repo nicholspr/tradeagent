@@ -173,9 +173,10 @@ All times are UK time (`TZ=Europe/London`).
 | 15:05 weekdays | **Share analyses:** met watch levels first, then least recently analysed. |
 | Every 5 min | **Queue:** places approved trades whose market has opened, and expires stale approvals (after Approval expiry; approved-but-queued trades after 24 hours). |
 | Every 15 min | **Watchlist prices** refreshed from eToro, for open markets only. |
+| Every minute | **Strategy auto-test:** checks each symbol on the auto-test list against the Fast, Fast v2 and Swing strategies, opening and closing $100 paper trades (see the Day trader page). Never trades. |
 | 21:30 daily | **Daily summary** email. |
 
-You can also run an analysis of any watchlist entry at any time from the Overview page. It counts towards Analyses per day.
+You can also run an analysis of any watchlist entry at any time from the Overview page, or of a symbol that's off the watchlist but still has an active watch level (its **Analyse now** link). It counts towards Analyses per day.
 
 ## 5. Watch levels (conditions checked overnight)
 
@@ -320,10 +321,11 @@ Email is sent through Gmail and SMS through Twilio. Both are optional.
 2. **Analyses today:** time, symbol, rating, whether scheduled or manual, and a link to the report, with the count against your daily limit.
 3. **Trades proposed by the app**, with their outcome and the reason for any failure or block.
 4. **Bought outside the app today:** positions opened in the eToro app or website.
-5. **Watch levels** and their status.
-6. **Scorecard headline:** how Buy and Overweight calls have done against VWRL.L so far.
-7. **Next share run:** the shares lined up for the next 15:05.
-8. **Mode and kill switch.**
+5. **Watch levels** and their status; symbols not on the watchlist are labelled as such, with a link to analyse them.
+6. **Strategy auto-test:** for each strategy (Fast, Fast v2, Swing), trades closed today and all-time, % in profit after fees and net; open auto-test trades; results by symbol; each tested symbol's current signals.
+7. **Scorecard headline:** how Buy and Overweight calls have done against VWRL.L so far.
+8. **Next share run:** the shares lined up for the next 15:05.
+9. **Mode and kill switch.**
 
 Each evening's totals are saved, so the next day can compare against them.
 
