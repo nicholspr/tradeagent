@@ -53,9 +53,10 @@ def _ensure() -> None:
         if "strategy" not in cols:
             c.execute("ALTER TABLE autotrades ADD COLUMN strategy TEXT DEFAULT 'fast'")
         scols = [r["name"] for r in c.execute("PRAGMA table_info(autotest_symbols)")]
-        for col in ("swing_state", "swing_headline"):
+        for col, kind in (("swing_state", "TEXT"), ("swing_headline", "TEXT"), ("name", "TEXT"),
+                          ("fast_on", "INTEGER DEFAULT 1"), ("swing_on", "INTEGER DEFAULT 1")):
             if col not in scols:
-                c.execute(f"ALTER TABLE autotest_symbols ADD COLUMN {col} TEXT")
+                c.execute(f"ALTER TABLE autotest_symbols ADD COLUMN {col} {kind}")
         if not c.execute("SELECT 1 FROM autotest_meta WHERE key='seeded'").fetchone():
             for iid, sym, kind in SEED:
                 c.execute("INSERT OR IGNORE INTO autotest_symbols(iid, symbol, kind, added) VALUES (?,?,?,?)",
@@ -98,12 +99,31 @@ def symbols() -> list[dict]:
         return [dict(r) for r in c.execute("SELECT * FROM autotest_symbols ORDER BY symbol")]
 
 
-def add_symbol(iid: int, symbol: str, kind: str) -> None:
+def add_symbol(iid: int, symbol: str | None = None, kind: str | None = None, name: str = "") -> dict:
+    """Add an eToro instrument. Symbol, name and kind (which decides the costs) are looked up on
+    eToro when not given. Both strategies start switched on."""
+    _ensure()
+    if symbol is None or kind is None:
+        sym, nm, kd = daytrader._cached(("name", int(iid)), 3600, lambda: daytrader._name(int(iid)))
+        if sym.startswith("#"):
+            raise ValueError(f"eToro has no instrument {iid}")
+        symbol, kind, name = symbol or sym, kind or kd, name or nm
+    with store._lock, store.connect() as c:
+        c.execute("INSERT OR IGNORE INTO autotest_symbols(iid, symbol, kind, name, added, fast_on, swing_on) "
+                  "VALUES (?,?,?,?,?,1,1)", (int(iid), symbol, kind, name, _now_iso()))
+    store.log("info", f"auto-test: added {symbol}")
+    return {"iid": int(iid), "symbol": symbol, "kind": kind, "name": name}
+
+
+def set_enabled(iid: int, key: str, on: bool) -> None:
+    """Switch one strategy on or off for a symbol. Switching off stops new trades; a trade already
+    open carries on to its stop, target or time limit."""
+    if key not in STRATEGIES:
+        raise ValueError(f"unknown strategy {key}")
     _ensure()
     with store._lock, store.connect() as c:
-        c.execute("INSERT OR IGNORE INTO autotest_symbols(iid, symbol, kind, added) VALUES (?,?,?,?)",
-                  (int(iid), symbol, kind, _now_iso()))
-    store.log("info", f"auto-test: added {symbol}")
+        c.execute(f"UPDATE autotest_symbols SET {key}_on=? WHERE iid=?", (1 if on else 0, int(iid)))
+    store.log("info", f"auto-test: {key} {'on' if on else 'off'} for instrument {iid}")
 
 
 def remove_symbol(iid: int) -> None:
@@ -227,6 +247,8 @@ def _tick_one(s: dict, r: dict | None, now: float) -> None:
             if not ex:
                 continue                                    # one trade per symbol per strategy
         sig = sigs[key]
+        if s.get(f"{key}_on", 1) in (0, "0"):
+            continue                                        # strategy switched off for this symbol
         if sig.get("state") == "enter" and ask is not None:
             with store._lock, store.connect() as c:
                 c.execute("INSERT INTO autotrades(iid, symbol, kind, strategy, opened, opened_ts, amt, entry, bid0, stop, "

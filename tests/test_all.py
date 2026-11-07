@@ -1723,8 +1723,15 @@ def test_daytrader_page_and_api(eng, monkeypatch):
         assert "Open paper trades" in r.text and "Closed paper trades" in r.text and "breakEven" in r.text
         assert "Strategy auto-test" in r.text
         assert c.get("/daytrader/autotest").json()["total"]["trades"] == 0
-        assert any(x["iid"] == 1137 and x["kind"] == "stock" for x in
-                   c.post("/daytrader/autotest/add", json={"iid": 1137, "symbol": "NVDA", "kind": "stock"}).json()["symbols"])
+        monkeypatch.setattr(daytrader, "_name", lambda iid: ("NVDA", "NVIDIA", "stock") if iid == 1137 else (f"#{iid}", "", "other"))
+        daytrader._cache.clear()
+        got = c.post("/daytrader/autotest/add", json={"iid": 1137, "kind": "crypto"}).json()["symbols"]
+        assert any(x["iid"] == 1137 and x["kind"] == "stock" and x["name"] == "NVIDIA" for x in got)   # type from eToro, not the page
+        assert c.post("/daytrader/autotest/add", json={"iid": 999999}).status_code == 400              # not an eToro instrument
+        got = c.post("/daytrader/autotest/toggle", json={"iid": 1137, "strategy": "swing", "on": False}).json()["symbols"]
+        assert [x["swing_on"] for x in got if x["iid"] == 1137] == [0]
+        assert c.post("/daytrader/autotest/toggle", json={"iid": 1137, "strategy": "bogus", "on": True}).status_code == 400
+        daytrader._cache.clear()
         assert all(x["iid"] != 1137 for x in c.post("/daytrader/autotest/remove", json={"iid": 1137}).json()["symbols"])
         assert "Day trader" in c.get("/").text                     # in the top menu
     assert not orders(fs)                                          # the page never trades
@@ -1880,6 +1887,11 @@ def test_autotest_opens_on_signal_and_closes_at_stop_target_or_time(eng, monkeyp
         c.executescript(autotest.CREATE)
         c.execute("INSERT OR IGNORE INTO autotest_meta(key, value) VALUES ('seeded','x')")
     autotest.add_symbol(15200, "TSLA.24-7", "cfd")
+    autotest.set_enabled(15200, "fast", False)
+    autotest.tick()
+    assert autotest.summary()["open"] == []                      # fast switched off: no trade despite Entry now
+    autotest.set_enabled(15200, "fast", True)
+    daytrader._cache.clear()
     autotest.tick()
     s = autotest.summary()
     assert len(s["open"]) == 1 and s["symbols"][0]["last_state"] == "enter"

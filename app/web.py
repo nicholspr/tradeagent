@@ -1121,10 +1121,14 @@ border-radius:10px;max-height:340px;overflow:auto;display:none;box-shadow:0 8px 
 .dt-tiles div{background:#0f131a;border:1px solid var(--line);border-radius:10px;padding:10px 12px}.dt-tiles span{display:block;font-size:12px;color:var(--muted)}
 .dt-tiles b{font-size:20px;font-variant-numeric:tabular-nums}.dt-auto h3{margin:16px 0 6px}.dt-auto td{font-variant-numeric:tabular-nums}
 .dt-arow{display:grid;grid-template-columns:minmax(90px,140px) 1fr auto;gap:4px 12px;padding:9px 0;border-bottom:1px solid var(--line2);align-items:start}
-.dt-arow .sym b{display:block}.dt-arow .sym span{font-size:11px;color:var(--muted)}.dt-arow .sg{font-size:12px;line-height:1.5}
+.dt-arow .sym b{display:block}.dt-arow .sym span{display:block;font-size:11px;color:var(--muted);line-height:1.4}.dt-arow .sg{font-size:12px;line-height:1.5}
 .dt-arow .sg div{margin-bottom:3px}.dt-arow .sg i{font-style:normal;color:var(--muted);display:inline-block;min-width:44px}
-.dt-arow button{min-height:28px;padding:3px 10px;font-size:12px}.dt-strat{font-size:13px;font-weight:600;margin:12px 0 4px}
-@media(max-width:600px){.dt-arow{grid-template-columns:1fr auto}.dt-arow .sg{grid-column:1/-1;grid-row:2}.dt-tiles b{font-size:17px}}
+.dt-arow button{min-height:28px;padding:3px 10px;font-size:12px}.dt-sw{display:inline-flex;align-items:center;gap:6px;font-size:12px;cursor:pointer;margin-right:12px;user-select:none}
+.dt-sw input{appearance:none;width:30px;height:17px;border-radius:9px;background:#374151;position:relative;cursor:pointer;margin:0;min-height:0;padding:0;border:0}
+.dt-sw input:checked{background:#16a34a}.dt-sw input::after{content:'';position:absolute;top:2px;left:2px;width:13px;height:13px;border-radius:50%;background:#fff;transition:left .15s}
+.dt-sw input:checked::after{left:15px}.dt-arow .ctl{display:flex;flex-wrap:wrap;align-items:center;gap:6px 0;justify-content:flex-end}
+.dt-strat{font-size:13px;font-weight:600;margin:12px 0 4px}
+@media(max-width:600px){.dt-arow{grid-template-columns:1fr auto}.dt-arow .ctl{justify-content:flex-start}.dt-arow .sg{grid-column:1/-1;grid-row:2}.dt-tiles b{font-size:17px}}
 .dt-auto .sp{font-weight:700;font-size:11px;padding:1px 8px;border-radius:999px;margin-right:6px;white-space:nowrap}
 .dt-set{display:grid;grid-template-columns:1fr 1fr;gap:8px;margin-top:10px}
 @media(max-width:700px){.dt-pchart{height:200px}}
@@ -1371,8 +1375,25 @@ alertLink();
 let auto=null,atimer=null;
 function autoLoad(){clearTimeout(atimer);fetch(B+'/daytrader/autotest').then(r=>r.ok?r.json():null).then(d=>{if(d){auto=d;autoPaint();}})
   .catch(()=>{}).finally(()=>{atimer=setTimeout(autoLoad,30000);});}
-function autoPost(path,body){fetch(B+'/daytrader/autotest/'+path,{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify(body)})
-  .then(r=>r.ok?r.json():null).then(d=>{if(d){auto=d;autoPaint();}});}
+function autoPost(path,body){return fetch(B+'/daytrader/autotest/'+path,{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify(body)})
+  .then(r=>r.ok?r.json():r.json().then(e=>{throw new Error(e.detail||r.status);},()=>{throw new Error(r.status);}))
+  .then(d=>{auto=d;autoPaint();}).catch(e=>toast('Auto-test: '+e.message));}
+// search box in the auto-test card
+(()=>{const q=$('dt-aq'),res=$('dt-ares');if(!q)return;let st=null,items=[],hl=-1;
+  const add=it=>{res.style.display='none';q.value='';
+    if(auto&&auto.symbols.some(x=>x.iid===it.instrumentId)){toast(it.symbol+' is already on the test list.');return;}
+    autoPost('add',{iid:it.instrumentId}).then(()=>{if(auto&&auto.symbols.some(x=>x.iid===it.instrumentId))toast(it.symbol+' added to the auto-test.');});};
+  q.addEventListener('input',()=>{clearTimeout(st);const v=q.value.trim();if(!v){res.style.display='none';return;}
+    st=setTimeout(()=>fetch(B+'/daytrader/search?q='+encodeURIComponent(v)).then(r=>r.json()).then(list=>{items=list;hl=-1;
+      res.innerHTML=list.length?'':'<div><span>No eToro instruments match</span></div>';
+      list.forEach(it=>{const d=document.createElement('div');const there=auto&&auto.symbols.some(x=>x.iid===it.instrumentId);
+        d.innerHTML='<b></b><span></span>';d.querySelector('b').textContent=it.symbol;
+        d.querySelector('span').textContent=it.name+' · '+it.type+(there?' · already on the list':'');d.onclick=()=>add(it);res.appendChild(d);});
+      res.style.display='block';}).catch(()=>{}),250);});
+  q.addEventListener('keydown',e=>{const ds=res.querySelectorAll('div');if(!items.length)return;
+    if(e.key==='ArrowDown'||e.key==='ArrowUp'){e.preventDefault();hl=(hl+(e.key==='ArrowDown'?1:-1)+items.length)%items.length;ds.forEach((d,i)=>d.classList.toggle('hl',i===hl));}
+    else if(e.key==='Enter'){e.preventDefault();add(items[Math.max(hl,0)]);}else if(e.key==='Escape')res.style.display='none';});
+  document.addEventListener('click',e=>{if(!e.target.closest('#dt-ares')&&e.target!==q)res.style.display='none';});})();
 const REASON={stop:'Stop',target:'Target'};
 function autoPaint(){const el=$('dt-auto');if(!el||!auto)return;const now=Date.now()/1000,S=auto.strategies||{fast:{label:'Fast'},swing:{label:'Swing'}};
   const tbl=(head,rows)=>'<div class=tbl><table><tr>'+head.map(h=>'<th>'+h+'</th>').join('')+'</tr>'+rows.join('')+'</table></div>';
@@ -1386,14 +1407,21 @@ function autoPaint(){const el=$('dt-auto');if(!el||!auto)return;const now=Date.n
       +'<div><span>Price moves</span><b class=\"'+cls(T.gross)+'\">'+sgn(T.gross)+'</b></div>'
       +'<div><span>Fees paid</span><b>'+money(T.fees)+'</b></div>'
       +'<div><span>Total net</span><b class=\"'+cls(T.net)+'\">'+sgn(T.net)+'</b></div></div>';});
+  el.innerHTML=h;h='';
   const inList=cur&&auto.symbols.some(x=>x.iid===cur.instrumentId);
   const sg=(st,hd)=>st?sigPill(st==='error'?'nodata':st)+'<span class=muted>'+(hd||'')+'</span>':'<span class=muted>waiting for the first check</span>';
-  h+='<h3>Symbols being tested</h3>'+(auto.symbols.length?auto.symbols.map(x=>'<div class=dt-arow><div class=sym><b>'+x.symbol+'</b><span>'
-      +(x.last_checked?'checked '+hm(Date.parse(x.last_checked)/1000):'not checked yet')+'</span></div>'
-      +'<div class=sg><div><i>Fast</i>'+sg(x.last_state,x.last_headline)+'</div><div><i>Swing</i>'+sg(x.swing_state,x.swing_headline)+'</div></div>'
-      +'<button class=sec data-arm=\"'+x.iid+'\" title=\"Stop testing '+x.symbol+'\">Remove</button></div>').join('')
-    :'<p class=muted>No symbols yet.</p>')
-    +(cur&&!inList?'<button class=sec id=dt-aadd style=\"margin-top:8px\">Add '+cur.symbol+' to the auto-test</button>':'');
+  const on=v=>v===undefined||v===null||+v===1;
+  const KL={crypto:'crypto · 2% fees',cfd:'24/7 CFD · spread only',stock:'share',etf:'ETF',other:'other'};
+  let lh=(cur&&!inList?'<button class=sec id=dt-aadd style=\"margin:8px 0\">Add '+cur.symbol+' (selected above)</button>':'')
+    +(auto.symbols.length?auto.symbols.map(x=>'<div class=dt-arow><div class=sym><b>'+x.symbol+'</b><span>'+(x.name?x.name+' · ':'')+(KL[x.kind]||x.kind)+'</span>'
+      +'<span>'+(x.last_checked?'checked '+hm(Date.parse(x.last_checked)/1000):'not checked yet')+'</span></div>'
+      +'<div class=sg><div><i>Fast</i>'+(on(x.fast_on)?sg(x.last_state,x.last_headline):'<span class=muted>off</span>')+'</div>'
+      +'<div><i>Swing</i>'+(on(x.swing_on)?sg(x.swing_state,x.swing_headline):'<span class=muted>off</span>')+'</div></div>'
+      +'<div class=ctl><label class=dt-sw><input type=checkbox data-tog=\"fast\" data-iid=\"'+x.iid+'\"'+(on(x.fast_on)?' checked':'')+'>Fast</label>'
+      +'<label class=dt-sw><input type=checkbox data-tog=\"swing\" data-iid=\"'+x.iid+'\"'+(on(x.swing_on)?' checked':'')+'>Swing</label>'
+      +'<button class=sec data-arm=\"'+x.iid+'\" title=\"Stop testing '+x.symbol+'\">Remove</button></div></div>').join('')
+    :'<p class=muted>The test list is empty. Search above to add a symbol.</p>');
+  $('dt-alist').innerHTML='<p class=muted style=\"margin:10px 0 0\">'+auto.symbols.length+' symbol'+(auto.symbols.length===1?'':'s')+' on the list</p>'+lh;
   h+='<h3>Open auto-test trades ('+auto.open.length+')</h3>'+(auto.open.length?tbl(['Symbol','Strategy','Opened','Entry (ask)','Stop','Target','Now (bid)','Net if closed'],
       auto.open.map(t=>'<tr><td>'+t.symbol+'</td><td>'+t.strategy+'</td><td>'+hm(t.opened_ts)+' · '+dur(now-t.opened_ts)+'</td><td>'+fmt(t.entry)+'</td><td>'+fmt(t.stop)+'</td><td>'+fmt(t.target)+'</td><td>'
         +(t.last_bid?fmt(t.last_bid):'–')+'</td><td class=\"'+(t.net!=null?cls(t.net):'')+'\">'+(t.net!=null?sgn(t.net):'–')+'</td></tr>'))
@@ -1404,9 +1432,10 @@ function autoPaint(){const el=$('dt-auto');if(!el||!auto)return;const now=Date.n
       +new Date(t.opened_ts*1000).toLocaleString('en-GB',{day:'numeric',month:'short',hour:'2-digit',minute:'2-digit'})+'</td><td>'+dur(t.closed_ts-t.opened_ts)+'</td><td>'
       +(REASON[t.reason]||t.reason)+'</td><td>'+fmt(t.entry)+' → '+fmt(t.exit)+'</td><td>'+money(t.fees)+'</td><td class=\"'+cls(t.net)+'\">'+sgn(t.net)+'</td></tr>'))
     :'<p class=muted>None yet.</p>');
-  el.innerHTML=h;
-  const ab=$('dt-aadd');if(ab)ab.onclick=()=>autoPost('add',{iid:cur.instrumentId,symbol:cur.symbol,kind:(data&&data.instrumentId===cur.instrumentId&&data.kind)||kindOf(cur.type,cur.symbol)});
-  el.querySelectorAll('[data-arm]').forEach(a=>a.onclick=e=>{e.preventDefault();const x=auto.symbols.find(s=>String(s.iid)===a.dataset.arm);
+  $('dt-arest').innerHTML=h;
+  const ab=$('dt-aadd');if(ab)ab.onclick=()=>autoPost('add',{iid:cur.instrumentId});
+  $('dt-alist').querySelectorAll('[data-tog]').forEach(c=>c.onchange=()=>autoPost('toggle',{iid:+c.dataset.iid,strategy:c.dataset.tog,on:c.checked}));
+  $('dt-alist').querySelectorAll('[data-arm]').forEach(a=>a.onclick=e=>{e.preventDefault();const x=auto.symbols.find(s=>String(s.iid)===a.dataset.arm);
     if(confirm('Stop auto-testing '+(x?x.symbol:'this symbol')+'?'+(auto.open.some(t=>String(t.iid)===a.dataset.arm)?' Its open trades will be closed at the last price.':'')))autoPost('remove',{iid:+a.dataset.arm});});}
 
 autoLoad();
@@ -1460,7 +1489,14 @@ def daytrader_page():
              "trade at the ask (one per symbol per strategy) and closes it at the signal's stop or target, or at the bid "
              "after 4 hours (fast) or 48 hours (swing). Costs as above. Nothing is sent to eToro. "
              "This keeps running with the page closed, so the results below show whether the signals make money after fees.</p>"
-             "<div id=dt-auto>Loading…</div></section></div>")
+             "<div id=dt-auto>Loading…</div>"
+             "<h3>Test list</h3><div class=dt-search style='max-width:none'><label>Add a symbol (any eToro instrument)</label>"
+             "<input id=dt-aq autocomplete=off placeholder='Search by symbol or name, e.g. ETH, XRP, AMD.24-7'>"
+             "<div class=dt-results id=dt-ares></div></div>"
+             "<p class=muted style='font-size:12px;margin:6px 0 0'>Switch <b>Fast</b> or <b>Swing</b> off to stop that strategy "
+             "opening new trades in a symbol (an open trade still runs to its stop, target or time limit). "
+             "<b>Remove</b> takes the symbol off the list and closes its open trades at the last price.</p>"
+             "<div id=dt-alist></div><div id=dt-arest></div></section></div>")
     html_ = page("Day trader", f"<style>{DT_CSS}</style>" + search + chart, active="Day trader").body.decode()
     html_ = html_.replace("<body>", f"<body data-root='{esc(B)}'>", 1).replace("</body>", f"<script>{DT_JS}</script></body>", 1)
     return HTMLResponse(html_)
@@ -1495,10 +1531,22 @@ async def daytrader_autotest_add(request: Request):
         iid = int(b["iid"])
     except (KeyError, TypeError, ValueError):
         raise HTTPException(400, "iid required")
-    sym, kind = str(b.get("symbol") or f"#{iid}")[:40], str(b.get("kind") or "other")[:10]
-    if kind not in ("crypto", "stock", "etf", "cfd", "other"):
-        kind = "other"
-    autotest.add_symbol(iid, sym, kind)
+    try:
+        autotest.add_symbol(iid)                 # symbol, name and cost type looked up on eToro
+    except ValueError as e:
+        raise HTTPException(400, str(e))
+    except Exception as e:  # noqa: BLE001
+        raise HTTPException(502, f"eToro lookup failed: {str(e)[:200]}")
+    return autotest.summary()
+
+
+@app.post("/daytrader/autotest/toggle")
+async def daytrader_autotest_toggle(request: Request):
+    b = await request.json()
+    try:
+        autotest.set_enabled(int(b["iid"]), str(b["strategy"]), bool(b["on"]))
+    except (KeyError, TypeError, ValueError) as e:
+        raise HTTPException(400, f"iid, strategy and on required ({e})")
     return autotest.summary()
 
 
