@@ -9,7 +9,7 @@ import threading
 import time
 from datetime import datetime, timezone
 
-from . import engine, store
+from . import engine, store, strategy
 
 BUCKET = 30            # seconds per live candle
 WINDOW = 30 * 60       # seconds shown on the chart
@@ -145,9 +145,9 @@ def _name(iid: int) -> tuple[str, str, str]:
     try:
         data = engine.client()._req("GET", "/api/v1/market-data/instruments", params={"instrumentIds": str(iid)})
         for it in data.get("instrumentDisplayDatas") or data.get("items") or []:
-            return (it.get("symbolFull") or it.get("internalSymbolFull") or f"#{iid}",
-                    it.get("instrumentDisplayName") or it.get("internalInstrumentDisplayName") or "",
-                    KINDS.get(it.get("instrumentTypeID"), "other"))
+            sym = it.get("symbolFull") or it.get("internalSymbolFull") or f"#{iid}"
+            kind = "cfd" if sym.upper().endswith(".24-7") else KINDS.get(it.get("instrumentTypeID"), "other")
+            return (sym, it.get("instrumentDisplayName") or it.get("internalInstrumentDisplayName") or "", kind)
     except Exception:  # noqa: BLE001
         pass
     return (f"#{iid}", "", "other")
@@ -191,11 +191,14 @@ def quote(iid: int) -> dict:
     return q
 
 
-def chart(iid: int) -> dict:
-    """Candles for the chart, plus the latest quote and whether the market looks open."""
+def chart(iid: int, hurdle_pct: float | None = None) -> dict:
+    """Candles for the chart, the latest quote, whether the market looks open, and the entry
+    signal from app/strategy.py (judged on the last 5 hours of 1-minute candles).
+    hurdle_pct: round-trip cost of a $100 trade in %, from the page's cost settings."""
     watch(iid)
     ec = engine.client()
-    history = _cached(("hist", iid), 25, lambda: ec.candles(iid, "OneMinute", 40))
+    long = _cached(("hist", iid), 25, lambda: ec.candles(iid, "OneMinute", 300))
+    history = long[-40:]
     with _lock:
         w = _watch.get(iid) or {"buckets": {}, "quote": None}
         buckets = {k: list(v) for k, v in w["buckets"].items()}
@@ -207,5 +210,17 @@ def chart(iid: int) -> dict:
     last_hist = _parse_ts(history[-1]["date"]) + 60 if history else now
     end = now if is_open else max(last_hist, max(buckets) + BUCKET if buckets else 0)
     name = _cached(("name", iid), 3600, lambda: _name(iid))
-    return {"instrumentId": iid, "symbol": name[0], "name": name[1], "kind": name[2], "open": is_open, "quote": quote, "end": end, "window": WINDOW,
+    bars = []
+    for c in long:
+        t = _parse_ts(c["date"])
+        if t is not None:
+            bars.append({"t": t, "o": c["open"], "h": c["high"], "l": c["low"], "c": c["close"]})
+    hurdle = strategy.default_hurdle(name[2]) if hurdle_pct is None else max(0.0, min(float(hurdle_pct), 20.0))
+    if quote:                                    # the spread is paid on top of the fees
+        hurdle += (quote["ask"] - quote["bid"]) / quote["bid"] * 100
+    try:
+        signal = strategy.evaluate(bars, quote and quote["bid"], quote and quote["ask"], is_open, hurdle)
+    except Exception as e:  # noqa: BLE001
+        signal = {"state": "nodata", "headline": f"Signal unavailable: {str(e)[:120]}", "reasons": []}
+    return {"signal": signal, "instrumentId": iid, "symbol": name[0], "name": name[1], "kind": name[2], "open": is_open, "quote": quote, "end": end, "window": WINDOW,
             "bucket": BUCKET, "candles": merge(history, buckets, end), "serverTime": now}

@@ -1092,6 +1092,12 @@ border-radius:10px;max-height:340px;overflow:auto;display:none;box-shadow:0 8px 
 .dt-pos details{margin-top:6px}.dt-pos summary{font-weight:500;font-size:12px}
 .dt-paper button.sm{min-height:30px;padding:5px 14px;font-size:13px}
 .dt-last{margin-top:16px;padding-top:12px;border-top:1px solid var(--line)}
+.dt-sig{margin:10px 0 2px;padding:10px 12px;border-radius:10px;background:#0f131a;border:1px solid var(--line)}
+.dt-sig .hd{display:flex;flex-wrap:wrap;gap:6px 10px;align-items:center}.dt-sig .sp{font-weight:700;font-size:12px;padding:2px 9px;border-radius:999px}
+.dt-sig .nums{display:flex;flex-wrap:wrap;gap:4px 18px;font-size:12px;margin-top:6px;color:var(--muted)}.dt-sig .nums b{color:var(--text);font-variant-numeric:tabular-nums}
+.dt-sig ul{margin:6px 0 0;padding-left:18px;font-size:12px;color:var(--muted)}.dt-sig details summary{font-size:12px;margin-top:6px}
+.dt-psig{font-size:12px;margin:4px 0}.dt-psig .sp{font-weight:700;font-size:11px;padding:1px 8px;border-radius:999px;margin-right:6px}
+.dt-toast{position:fixed;right:16px;bottom:16px;z-index:50;background:#14532d;color:#fff;border:1px solid #22c55e;border-radius:12px;padding:12px 16px;max-width:340px;box-shadow:0 8px 24px #0009;font-size:14px}
 .dt-set{display:grid;grid-template-columns:1fr 1fr;gap:8px;margin-top:10px}
 @media(max-width:700px){.dt-pchart{height:200px}}
 """
@@ -1129,7 +1135,7 @@ function pick(it){cur=it;res.style.display='none';box.value='';
   data=null;$('dt-px').textContent='–';$('dt-chg').textContent='';$('dt-ba').textContent='';load();if(typeof poll==='function'){paint();poll();}}
 // ---- data
 function load(){if(!cur)return;clearTimeout(timer);$('dt-status').textContent='Updating…';
-  fetch(B+'/daytrader/candles/'+cur.instrumentId).then(r=>{if(!r.ok)throw new Error(r.status);return r.json();})
+  fetch(B+'/daytrader/candles/'+cur.instrumentId+hurdleQ(data&&data.instrumentId===cur.instrumentId?data.kind:null,cur.symbol)).then(r=>{if(!r.ok)throw new Error(r.status);return r.json();})
   .then(d=>{if(!cur||d.instrumentId!==cur.instrumentId)return;data=d;draw();})
   .catch(e=>{$('dt-status').textContent='Update failed ('+e.message+'), retrying';})
   .finally(()=>{next=Date.now()+30000;timer=setTimeout(load,30000);});}
@@ -1186,9 +1192,39 @@ function draw(){
   if(cs.length&&q){const a=cs[0].o,b=data.open?q.bid:cs[cs.length-1].c,p=(b-a)/a*100;
     ch.textContent=(p>=0?'+':'')+fmt(b-a)+' ('+(p>=0?'+':'')+p.toFixed(2)+'%) over 30 min';ch.className=p>=0?'dt-up':'dt-dn';}
   else ch.textContent='';
+  $('dt-sig').innerHTML=sigBox(data.signal,false,data.symbol||(cur&&cur.symbol));watchSig(data);
   if(typeof posData!=='undefined'){posData[data.instrumentId]=data;if(typeof paint==='function')paint();}}
 function nice(x){const p=Math.pow(10,Math.floor(Math.log10(x))),f=x/p;return (f<1.5?1:f<3?2:f<7?5:10)*p;}
 
+// ---- entry signals (rules in app/strategy.py, judged on the server every 30 s)
+const SIG={enter:['Entry now','#22c55e','#052e16'],wait:['Wait','#f59e0b','#2a1d05'],avoid:['Avoid','#ef4444','#2a0a0a'],
+  fees:['Fees too high','#9ca3af','#1f2430'],closed:['Market closed','#9ca3af','#1f2430'],nodata:['No signal yet','#9ca3af','#1f2430']};
+const C_ENT='#22c55e';
+function hurdleQ(kind,symbol){if(!kind)return '';const p={amt:100,ask:1,kind,symbol:symbol||'',comm:cfg.comm,fx:cfg.fx};
+  return '?hurdle='+((breakEven(p)-1)*100).toFixed(3);}
+function sigPill(st){const k=SIG[st]||SIG.nodata;return '<span class=sp style=\"color:'+k[1]+';background:'+k[2]+';border:1px solid '+k[1]+'55\">'+k[0]+'</span>';}
+function sigBox(sg,compact,sym){if(!sg)return '';
+  const nums=sg.entry!=null?('<span>'+(sg.state==='enter'?'Entry':'Buy at')+' <b>'+fmt(sg.entry)+'</b></span><span>Stop <b>'+fmt(sg.stop)+'</b></span><span>Target <b>'+fmt(sg.target)+'</b></span>'
+    +'<span>Move to target <b>'+sg.reward_pct+'%</b> vs costs <b>'+sg.hurdle_pct+'%</b></span>'):'';
+  if(compact)return '<div class=dt-psig>'+sigPill(sg.state)+'<span>'+sg.headline+'</span>'+(nums?'<div class=nums style=\"display:flex;flex-wrap:wrap;gap:2px 14px;color:var(--muted);margin-top:3px\">'+nums+'</div>':'')+'</div>';
+  return '<div class=dt-sig><div class=hd><b>Entry signal</b>'+sigPill(sg.state)+'<span>'+sg.headline+'</span></div>'
+    +(nums?'<div class=nums>'+nums+'</div>':'')
+    +((sg.reasons||[]).length?'<details><summary>Why</summary><ul>'+sg.reasons.map(r=>'<li>'+r+'</li>').join('')+'</ul>'
+      +'<p class=muted style=\"font-size:12px;margin:6px 0 0\">'+(sg.strategy||'')+'. A starting rule set to test with paper trades, not a proven edge.</p></details>':'')+'</div>';}
+function entryLine(sg){return sg&&sg.entry!=null&&(sg.state==='enter'||sg.state==='wait')?[{v:sg.entry,c:C_ENT,dash:'2 3',label:(sg.state==='enter'?'Entry now ':'Suggested entry ')+fmt(sg.entry)}]:[];}
+// alerts: when any watched symbol's signal changes to "Entry now"
+const lastSt={};let alertsOn=false;try{alertsOn=localStorage.getItem('dt-alerts')==='1';}catch(e){}
+function watchSig(d){if(!d||!d.signal)return;const was=lastSt[d.instrumentId],now=d.signal.state;lastSt[d.instrumentId]=now;
+  if(now==='enter'&&was&&was!=='enter'){const sym=d.symbol||('#'+d.instrumentId),msg=sym+': entry signal at '+fmt(d.signal.entry)+' (stop '+fmt(d.signal.stop)+', target '+fmt(d.signal.target)+')';
+    toast(msg);document.title='● '+sym+' entry · TradeAgent';
+    if(alertsOn&&'Notification' in window&&Notification.permission==='granted'){try{new Notification('TradeAgent entry signal',{body:msg});}catch(e){}}}}
+function toast(msg){const t=document.createElement('div');t.className='dt-toast';t.textContent=msg;document.body.appendChild(t);setTimeout(()=>t.remove(),15000);t.onclick=()=>t.remove();}
+addEventListener('focus',()=>{document.title='Day trader · TradeAgent';});
+function alertLink(){const a=$('dt-alerts');if(!a)return;
+  a.textContent=alertsOn?'Entry alerts on (turn off)':'Turn on entry alerts';
+  a.onclick=e=>{e.preventDefault();if(alertsOn){alertsOn=false;try{localStorage.setItem('dt-alerts','0');}catch(e){}alertLink();return;}
+    const done=()=>{alertsOn=true;try{localStorage.setItem('dt-alerts','1');}catch(e){}alertLink();toast('Entry alerts on. You’ll be told here'+(('Notification' in window&&Notification.permission==='granted')?' and by a notification':'')+' while this page is open.');};
+    if('Notification' in window&&Notification.permission==='default')Notification.requestPermission().then(done);else done();};}
 // ---- paper trades (several can be open at once)
 const AMT=100;
 const ld=(k,d)=>{try{const v=localStorage.getItem(k);return v==null?d:JSON.parse(v);}catch(e){return d;}};
@@ -1218,8 +1254,8 @@ function breakEven(p){const units=p.amt/p.ask,r=(p.kind==='crypto'?0.01:0)+(p.fx
   return (p.amt+fixed)/(1-r)/units;}
 var posData={},ctimer=null;
 function loadPosCharts(){clearTimeout(ctimer);const ids=[...new Set(open_.map(p=>p.iid))];
-  Promise.all(ids.map(iid=>(data&&data.instrumentId===iid?Promise.resolve(data):fetch(B+'/daytrader/candles/'+iid).then(r=>r.ok?r.json():null).catch(()=>null))
-    .then(d=>{if(d)posData[iid]=d;}))).then(()=>paint()).finally(()=>{if(open_.length)ctimer=setTimeout(loadPosCharts,30000);});}
+  Promise.all(ids.map(iid=>(data&&data.instrumentId===iid?Promise.resolve(data):fetch(B+'/daytrader/candles/'+iid+hurdleQ((open_.find(p=>p.iid===iid)||{}).kind,(open_.find(p=>p.iid===iid)||{}).symbol)).then(r=>r.ok?r.json():null).catch(()=>null))
+    .then(d=>{if(d){posData[iid]=d;watchSig(d);}}))).then(()=>paint()).finally(()=>{if(open_.length)ctimer=setTimeout(loadPosCharts,30000);});}
 const getQ=ids=>fetch(B+'/daytrader/quotes?ids='+ids.join(',')).then(r=>{if(!r.ok)throw 0;return r.json();});
 function poll(){clearTimeout(ptimer);const ids=[...new Set(open_.map(p=>p.iid).concat(cur?[cur.instrumentId]:[]))];
   if(!ids.length)return;
@@ -1229,7 +1265,7 @@ function openPos(){if(!cur||busy)return;busy=true;paint();
   getQ([cur.instrumentId]).then(d=>{const q=d[cur.instrumentId];if(!q)throw 0;qs[cur.instrumentId]=q;
     if(!q.open&&!confirm('The market looks closed, so this price is stale. Open anyway?'))return;
     open_.push({id:'p'+Date.now()+Math.random().toString(36).slice(2,6),iid:cur.instrumentId,symbol:cur.symbol,name:cur.name||'',
-      kind:(data&&data.instrumentId===cur.instrumentId&&data.kind)||kindOf(cur.type),amt:AMT,ask:q.ask,bid0:q.bid,t:Date.now()/1000,comm:cfg.comm,fx:cfg.fx});
+      kind:(data&&data.instrumentId===cur.instrumentId&&data.kind)||kindOf(cur.type,cur.symbol),amt:AMT,ask:q.ask,bid0:q.bid,t:Date.now()/1000,comm:cfg.comm,fx:cfg.fx});
     sv('dt-open',open_);last=null;draw();poll();loadPosCharts();})
   .catch(()=>alert('Could not get a price from eToro, try again.')).finally(()=>{busy=false;paint();});}
 function closePos(id){const p=open_.find(x=>x.id===id);if(!p||busy)return;busy=true;paint();
@@ -1244,8 +1280,8 @@ function closeAll(){if(!open_.length||busy)return;if(!confirm('Close all '+open_
       hist.unshift({symbol:p.symbol,t:p.t,tc,ask:p.ask,exit:q.bid,gross:c.gross,fees:c.fees,net:c.net});done.push(p.id);});
     hist=hist.slice(0,20);open_=open_.filter(p=>!done.includes(p.id));sv('dt-open',open_);sv('dt-hist',hist);last=null;draw();})
   .catch(()=>alert('Could not get prices from eToro, try again.')).finally(()=>{busy=false;paint();});}
-function kindOf(t){t=(t||'').toLowerCase();return t.startsWith('crypto')?'crypto':t==='etf'?'etf':t.startsWith('stock')?'stock':'other';}
-const KN={crypto:'Crypto',stock:'Share',etf:'ETF',other:'CFD/other'};
+function kindOf(t,sym){if(/\\.24-7$/i.test(sym||''))return 'cfd';t=(t||'').toLowerCase();return t.startsWith('crypto')?'crypto':t==='etf'?'etf':t.startsWith('stock')?'stock':'other';}
+const KN={crypto:'Crypto',stock:'Share',etf:'ETF',cfd:'24/7 CFD',other:'CFD/other'};
 function kv(rows){return '<div class=dt-kv>'+rows.map(r=>'<span'+(r[2]?' class=\"'+r[2]+'\"':'')+'>'+r[0]+'</span><span'+(r[2]?' class=\"'+r[2]+'\"':'')+'>'+r[1]+'</span>').join('')+'</div>';}
 function paint(){const el=$('dt-pbody');if(!el)return;const now=Date.now()/1000;
   const ob=$('dt-openbtn');
@@ -1254,12 +1290,13 @@ function paint(){const el=$('dt-pbody');if(!el)return;const now=Date.now()/1000;
   let h='';
   if(!open_.length)h='<p class=muted>No open paper trades. Pick a symbol and press <b>Open $'+AMT+' paper buy</b> above. Nothing is ever sent to eToro.</p>';
   else{let tg=0,tn=0;
-    h+='<div class=dt-key><span><i style=\"color:'+C_BUY+'\"></i>Paper buy</span><span><i style=\"color:'+C_TGT+'\"></i>Target: break-even after fees</span><span><i style=\"color:'+C_LAST+'\"></i>Current price</span></div>';
+    h+='<div class=dt-key><span><i style=\"color:'+C_ENT+'\"></i>Suggested entry</span><span><i style=\"color:'+C_BUY+'\"></i>Paper buy</span><span><i style=\"color:'+C_TGT+'\"></i>Target: break-even after fees</span><span><i style=\"color:'+C_LAST+'\"></i>Current price</span></div>';
     h+=open_.map(p=>{const q=qs[p.iid];const c=q?costs(p,q.bid):null;if(c){tg+=c.gross;tn+=c.net;}
       const be=breakEven(p),togo=q?(be-q.bid)/q.bid*100:null;
       return '<div class=dt-pos'+(cur&&cur.instrumentId===p.iid?' style=\"border-color:#f59e0b55\"':'')+'>'
         +'<div class=dt-prow><a href=\"#\" data-show=\"'+p.iid+'\"><b>'+p.symbol+'</b></a><span class=muted>'+KN[p.kind]+' · opened '+hms(p.t)+' · '+dur(now-p.t)+(q&&!q.open?' · market closed':'')+'</span>'
         +(c?'<span class=\"dt-pl '+cls(c.gross)+'\">'+sgn(c.gross)+' <small>'+pc(c.gross,p.amt)+'</small></span>':'<span class=dt-pl>…</span>')+'</div>'
+        +sigBox((posData[p.iid]||{}).signal,true)
         +'<svg class=dt-pchart data-chart=\"'+p.id+'\"></svg>'
         +'<div class=dt-stats><div><span>Bought (ask)</span><b>'+fmt(p.ask)+'</b></div><div><span>Now (bid)</span><b>'+(q?fmt(q.bid):'–')+'</b></div>'
         +'<div><span>Target</span><b style=\"color:'+C_TGT+'\">'+fmt(be)+'</b></div>'
@@ -1276,7 +1313,7 @@ function paint(){const el=$('dt-pbody');if(!el)return;const now=Date.now()/1000;
     const d=posData[p.iid]||(data&&data.instrumentId===p.iid?data:null),W=svg.clientWidth||600,H=svg.clientHeight||220;
     svg.setAttribute('viewBox','0 0 '+W+' '+H);
     if(!d){svg.innerHTML='<text x=\"12\" y=\"24\">Loading chart…</text>';return;}
-    const q=qs[p.iid]||d.quote,lines=lastLine(d,q).concat(posLines(p,false)),t1=Math.max(d.end,q&&d.open?q.ts:0);
+    const q=qs[p.iid]||d.quote,lines=lastLine(d,q).concat(posLines(p,false),entryLine(d.signal)),t1=Math.max(d.end,q&&d.open?q.ts:0);
     svg.innerHTML=render(W,H,d.candles,{t0:t1-d.window,t1,bucket:d.bucket,lines});});
   const ca=$('dt-closeall');if(ca)ca.onclick=closeAll;
   el.querySelectorAll('[data-close]').forEach(b=>b.onclick=()=>closePos(b.dataset.close));
@@ -1301,6 +1338,7 @@ function paint(){const el=$('dt-pbody');if(!el)return;const now=Date.now()/1000;
   const cl=$('dt-clear');if(cl)cl.onclick=e=>{e.preventDefault();if(confirm('Clear the closed paper trade history?')){hist=[];sv('dt-hist',hist);paint();}};}
 setInterval(()=>{if(open_.length)paint();},1000);
 addEventListener('resize',()=>paint());
+alertLink();
 if(open_.length)loadPosCharts();
 // ---- start: ?iid= in the address, else the last symbol viewed
 let saved=null;try{saved=JSON.parse(localStorage.getItem('dt-cur')||'null');}catch(e){}
@@ -1315,7 +1353,7 @@ else if(want)pick({instrumentId:+want,symbol:'#'+want,name:''});
 @app.get("/daytrader", response_class=HTMLResponse)
 def daytrader_page():
     search = card("Day trader (test)",
-                  "<p class=muted>Pick any eToro instrument to see its live price and open theoretical $100 paper trades, "
+                  "<p class=muted>Pick any eToro instrument to see its live price, an entry signal, and open theoretical $100 paper trades, "
                   "as many at once as you like. Nothing is ever sent to eToro from this page. Each open trade gets its own "
                   "live 30-minute candle chart: eToro's smallest candle is 1 minute, so it starts with 1-minute candles (paler) "
                   "and 30-second candles, built from the live price sampled every 5 seconds, take over while the page is open.</p>"
@@ -1327,7 +1365,9 @@ def daytrader_page():
              "<span class=pill id=dt-live></span><button id=dt-openbtn>Open $100 paper buy</button></div>"
              "<div class=dt-head><span class=dt-px id=dt-px>–</span><span id=dt-chg></span>"
              "<span class=muted id=dt-ba></span></div>"
-             "<div class=dt-head><span class=muted id=dt-status></span><span class=muted>· <span id=dt-next></span></span></div>"
+             "<div id=dt-sig></div>"
+             "<div class=dt-head><span class=muted id=dt-status></span><span class=muted>· <span id=dt-next></span></span>"
+             "<a href='#' id=dt-alerts style='margin-left:auto;font-size:13px'>Turn on entry alerts</a></div>"
              "</section>"
              "<section class='card dt-paper' id=dt-paper><h2>Open paper trades (theoretical)</h2><div id=dt-pbody></div></section>"
              "<section class='card dt-side'><h2>Closed paper trades</h2><div id=dt-hist></div>"
@@ -1338,8 +1378,8 @@ def daytrader_page():
              "<p class=muted>Buys fill at the <b>ask</b> and sells at the <b>bid</b>, so the spread is in the price. "
              "Crypto: 1% fee to buy and 1% to sell. Shares: commission per side (eToro charges $1 or $2 by country and "
              "exchange; check the estimated cost on eToro's trade screen and set it here), plus 0.5% UK stamp duty on buys "
-             "of London-listed shares. ETFs: no commission. Currency conversion applies only if your account currency "
-             "differs from the asset's; 0 for a USD account trading USD assets. Overnight fees for CFDs are not included. "
+             "of London-listed shares. ETFs and 24/7 CFDs (<code>.24-7</code> symbols): no commission, just the spread; CFD overnight fees are not included. Currency conversion applies only if your account currency "
+             "differs from the asset's; 0 for a USD account trading USD assets. "
              "The <b>target</b> line is the price at which selling would exactly cover all of these costs.</p>"
              "</details></section></div>")
     html_ = page("Day trader", f"<style>{DT_CSS}</style>" + search + chart, active="Day trader").body.decode()
@@ -1373,9 +1413,9 @@ def daytrader_quote(iid: int):
 
 
 @app.get("/daytrader/candles/{iid}")
-def daytrader_candles(iid: int):
+def daytrader_candles(iid: int, hurdle: float | None = None):
     try:
-        return daytrader.chart(iid)
+        return daytrader.chart(iid, hurdle)
     except Exception as e:  # noqa: BLE001
         raise HTTPException(502, f"eToro price data failed: {str(e)[:200]}")
 

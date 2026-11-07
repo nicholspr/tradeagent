@@ -1713,12 +1713,13 @@ def test_daytrader_page_and_api(eng, monkeypatch):
     importlib.reload(web)
     monkeypatch.setattr(web.sched, "start", lambda: None)
     monkeypatch.setattr(daytrader, "search", lambda q: [{"instrumentId": 1137, "symbol": "NVDA", "name": "NVIDIA", "type": "Stocks"}])
-    monkeypatch.setattr(daytrader, "chart", lambda iid: {"instrumentId": iid, "candles": [], "open": False})
+    monkeypatch.setattr(daytrader, "chart", lambda iid, hurdle=None: {"instrumentId": iid, "candles": [], "open": False, "hurdle": hurdle})
     with TestClient(web.app) as c:
         r = c.get("/daytrader")
         assert r.status_code == 200 and "Day trader" in r.text and "dt-openbtn" in r.text and "data-root" in r.text
         assert c.get("/daytrader/search?q=nvd").json()[0]["symbol"] == "NVDA"
         assert c.get("/daytrader/candles/1137").json()["instrumentId"] == 1137
+        assert c.get("/daytrader/candles/1137?hurdle=2.02").json()["hurdle"] == 2.02
         assert "Open paper trades" in r.text and "Closed paper trades" in r.text and "breakEven" in r.text
         assert "Day trader" in c.get("/").text                     # in the top menu
     assert not orders(fs)                                          # the page never trades
@@ -1759,3 +1760,77 @@ def test_rates_prefer_fresher_v2_price():
     assert r[2]["bid"] == 10.0                                                                  # v1 newer, kept
     r = etoro.EtoroClient("k", "u", env="real", base="https://x", session=S(Resp(500, {}))).rates([1])
     assert r[1]["bid"] == 90.36                                                                 # v2 down: v1 still works
+
+
+def _bars(fn, n=300, t0=1_800_000_000):
+    bars, prev = [], fn(0)
+    for i in range(n):
+        c = fn(i)
+        bars.append({"t": t0 + 60 * i, "o": prev, "h": max(prev, c) * 1.0008, "l": min(prev, c) * 0.9992, "c": c})
+        prev = c
+    return bars
+
+
+def test_strategy_signals():
+    import math
+    from app import strategy as st
+
+    def dip(i):                      # steady uptrend, a 7-minute dip, then turning up
+        p = 100 * (1 + 0.0004 * i) + 0.05 * math.sin(i / 3)
+        if i >= 290:
+            p -= (min(i, 297) - 290) * 0.15
+        if i >= 298:
+            p += (i - 297) * 0.03
+        return p
+    b = _bars(dip)
+    s = st.evaluate(b, b[-1]["c"], b[-1]["c"] * 1.0001, True, 0.2)
+    assert s["state"] == "enter" and s["stop"] < s["entry"] < s["target"]
+    assert abs((s["target"] - s["entry"]) - 2 * (s["entry"] - s["stop"])) < 1e-9          # 2:1 reward to risk
+    assert st.evaluate(b, b[-1]["c"], b[-1]["c"], True, 2.02)["state"] == "fees"           # same move can't pay crypto fees
+
+    down = _bars(lambda i: 100 * (1 - 0.0004 * i) + 0.05 * math.sin(i / 3))
+    s = st.evaluate(down, down[-1]["c"], down[-1]["c"], True, 0.2)
+    assert s["state"] == "avoid" and s["entry"] is None
+
+    ext = _bars(lambda i: 100 * (1 + 0.0004 * i) + (0.4 if i > 295 else 0))
+    s = st.evaluate(ext, ext[-1]["c"], ext[-1]["c"], True, 0.2)
+    assert s["state"] == "wait" and s["entry"] < ext[-1]["c"]                               # buy level below the price
+
+    assert st.evaluate(b, None, None, False, 1)["state"] == "closed"
+    assert st.evaluate(b[:30], 1, 1, True, 1)["state"] == "nodata"
+    assert len(st.resample(b, 300)) == 60
+
+
+def test_daytrader_chart_includes_signal_and_cfd_kind(monkeypatch):
+    import math, time as _t
+    from app import daytrader as dt, engine
+    now = _t.time()
+    t0 = int(now // 60 * 60) - 299 * 60
+    iso = lambda t: datetime.fromtimestamp(t, timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
+
+    class C:
+        def candles(self, iid, interval, count):
+            out, prev = [], 100.0
+            for i in range(count):
+                c = 100 * (1 - 0.0004 * i) + 0.05 * math.sin(i / 3)      # downtrend
+                out.append({"date": iso(t0 + 60 * i), "open": prev, "high": max(prev, c) + 0.05, "low": min(prev, c) - 0.05, "close": c})
+                prev = c
+            return out
+
+        def live_rates(self, ids):
+            return {i: {"bid": 88.0, "ask": 88.1, "date": iso(now)} for i in ids}
+
+        rates = live_rates
+
+        def _req(self, method, path, params=None):
+            return {"instrumentDisplayDatas": [{"symbolFull": "TSLA.24-7", "instrumentDisplayName": "Tesla 24/7", "instrumentTypeID": 5}]}
+
+    monkeypatch.setattr(engine, "client", lambda: C())
+    monkeypatch.setattr(dt, "watch", lambda iid: None)
+    dt._cache.clear()
+    d = dt.chart(15200, 0.0)
+    assert d["kind"] == "cfd" and d["symbol"] == "TSLA.24-7"
+    assert d["signal"]["state"] == "avoid"                                   # never buy a downtrend
+    assert abs(d["signal"]["hurdle_pct"] - 0.11) < 0.01                      # spread (0.1/88) added to the fees
+    assert len(d["candles"]) <= 31                                          # chart still shows only 30 minutes
+    dt._cache.clear()

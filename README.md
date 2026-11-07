@@ -245,6 +245,13 @@ A first step towards intraday tools. Search for any eToro instrument by symbol o
   - Each card also shows the buy and current prices, costs and net if closed now, and updates every 5 seconds (charts every 30). Tap a position's symbol to make it the selected symbol. **Close** sells one at the bid; **Close all** closes everything. Totals for all open positions sit under the list.
   - **Closed paper trades** shows the full cost breakdown of the trade you just closed, then the last 20 closed trades with time, holding period, costs and net, plus how many were in profit and the running total.
   - Costs follow eToro's published fees: crypto 1% to buy and 1% to sell; shares a commission per side ($1 or $2 by country and exchange, set under *Cost assumptions*, default $1) plus 0.5% UK stamp duty on buys of `.L` shares; ETFs no commission; an optional currency conversion % per side. CFD overnight fees are not included. Everything is kept in your browser, so it survives a refresh but isn't shared between devices.
+- **Entry signals.** The selected symbol and every symbol with an open paper trade are checked every 30 seconds against a plain, rule-based strategy (`app/strategy.py`, no AI), judged on the last 5 hours of 1-minute candles:
+  1. **Trend:** on 5-minute bars, only buy when the 20-bar EMA is above the 50-bar EMA and rising, and the price is above the 50-bar EMA. Never buy a downtrend.
+  2. **Entry level:** buy pullbacks to the 1-minute 20-bar EMA rather than chasing. **Entry now** when the price is at that level and 1-minute RSI(14) has turned up from below 55; otherwise **Wait**, with the level to buy at.
+  3. **Stop and target:** stop 1.5 × the 5-minute ATR(14) below the entry; target twice that distance above (2:1 reward to risk).
+  4. **Fee filter:** the move to target must be at least 1.5 × the round-trip cost (eToro fees from the cost settings plus the live spread). If not, the verdict is **Fees too high** rather than a trade.
+
+  Verdicts: Entry now, Wait, Avoid (no uptrend), Fees too high, Market closed. The symbol card shows the verdict, entry, stop, target, move-to-target vs costs, and a "Why" list of the readings behind it; each open trade shows a compact version, and its chart gets a green dotted **suggested entry** line. **Turn on entry alerts** shows a pop-up (and a browser notification, if you allow it) when any watched symbol changes to Entry now, while the page is open. It's a starting rule set to test with paper trades, not a proven edge. On crypto, eToro's 2% round trip means it will often say Fees too high; 24/7 CFDs (`.24-7` symbols, costed as spread only) and quieter fee-free assets are where it can fire.
 - Nothing is ever sent to eToro from this page.
 
 ### Scorecard: does it work?
@@ -355,7 +362,7 @@ Removing an entry does not sell it; holdings stay until sold. London (`.L`) inst
 
 ```bash
 pip install -r requirements.txt
-python -m pytest -q tests          # 70 tests, all offline (fakes for eToro, Claude, email)
+python -m pytest -q tests          # 72 tests, all offline (fakes for eToro, Claude, email)
 DATA_DIR=./data uvicorn app.web:app --reload
 ```
 
@@ -369,6 +376,7 @@ On Windows, `run-local.bat` runs the full app at `http://localhost:8000/`. It al
 | `app/policy.py` | Watchlist parsing, rating → proposal, hard limits, approval rules, and the account-rules text. Pure functions, fully tested. |
 | `app/engine.py` | Analysis, proposals, approval, execution, the queue, scheduled runs, pre-flight, overrides, the daily summary, the audit trail and one-off fixes. |
 | `app/etoro.py` prices | `rates()` takes bid/ask from eToro's v2 rates endpoint whenever it is newer than v1 (v1 was seen returning crypto prices hours old); v1 still supplies the currency conversion rates. |
+| `app/strategy.py` | Day trader entry signals: 5-min trend, 1-min pullback timing, ATR stop/target, fee filter. |
 | `app/daytrader.py` | Day trader test page: eToro instrument search, live price sampling and 30-second candles. |
 | `app/terms.py` | Holding period per symbol; the short-term agent note; stop-loss and take-profit extraction and sanity checks. |
 | `app/levels.py` | Watch levels: extraction, the overnight check, queue priority, agent notes and backfill. |
