@@ -167,3 +167,108 @@ def _judge(trend_bars: list[dict], timing_bars: list[dict], bid, ask, is_open: b
         reasons.append(f"Price is {dist:.2f}% above the {TM} EMA20 buy level; don't chase")
         out.update(state="wait", headline="Wait for a pullback to the buy level before entering.")
     return out
+
+
+# ---------------------------------------------------------------------------------------------
+# Fast v2: the fast strategy with the fixes suggested by its first live results (7 Nov 2026:
+# three SKHY.24-7 stop-outs on a quiet, drifting weekend price).
+QUIET_PCT = 0.15         # skip when the typical 5-minute move (ATR) is below this % of the price
+MIN_STOP_PCT = 0.30      # never put the stop closer than this % below the price paid...
+SPREAD_STOPS = 3.0       # ...or closer than this many spreads
+HOME = {"SKHY": ("Asia/Seoul", (9, 0), (15, 30), "Korean")}     # 24/7 CFDs follow their home market
+DEFAULT_HOME = ("America/New_York", (9, 30), (16, 0), "US")      # the US names and pre-IPO CFDs
+FAST2 = {"key": "fast2", "name": "Fast v2 (fast + quiet filter, 1-hour trend, spread-aware stops, home-market hours)"}
+
+
+def home_market(symbol: str) -> tuple:
+    return HOME.get(symbol.upper().split(".")[0], DEFAULT_HOME)
+
+
+def home_open(symbol: str, now) -> bool:
+    """Is the home exchange of a 24/7 CFD open now (weekdays, regular hours, local time)?"""
+    from zoneinfo import ZoneInfo
+    tz, start, end, _ = home_market(symbol)
+    local = now.astimezone(ZoneInfo(tz))
+    hm = (local.hour, local.minute)
+    return local.weekday() < 5 and start <= hm < end
+
+
+def evaluate_fast2(bars_1m: list[dict], bars_1h: list[dict], bid, ask, is_open: bool, hurdle_pct: float,
+                   kind: str = "", symbol: str = "", now=None) -> dict:
+    """Like evaluate(), plus: (1) skip quiet markets, (2) the 1-hour trend must agree, (3) stop at least
+    MIN_STOP_PCT and SPREAD_STOPS spreads away, (4) stop/target measured from the ask actually paid, and
+    the reward after costs must be at least the risk after costs, (5) 24/7 CFDs only in home-market hours.
+    hurdle_pct includes the spread, as for the other strategies."""
+    from datetime import datetime, timezone
+    now = now or datetime.now(timezone.utc)
+    out = {"strategy": FAST2["name"], "key": "fast2", "state": "nodata", "headline": "", "entry": None, "stop": None,
+           "target": None, "reward_pct": None, "hurdle_pct": round(hurdle_pct, 2), "reasons": [], "ind": {}}
+    if not is_open or bid is None:
+        out.update(state="closed", headline="Market closed: no live price, so no entry signal.")
+        return out
+    if kind == "cfd" and not home_open(symbol, now):
+        tz, start, end, name = home_market(symbol)
+        out.update(state="closed", headline=f"{name} market closed: no trades on 24/7 weekend or overnight prices.")
+        out["reasons"].append(f"Trades only {start[0]:02d}:{start[1]:02d}-{end[0]:02d}:{end[1]:02d} {tz} time, Monday to Friday")
+        return out
+    if len(bars_1m) < MIN_1M or len(bars_1h) < 50:
+        out["headline"] = "Not enough recent price history yet to judge an entry."
+        return out
+    ask = ask or bid
+    spread = ask - bid
+    spread_pct = spread / bid * 100
+    fee_pct = max(0.0, hurdle_pct - spread_pct)              # fees without the spread
+    reasons = out["reasons"]
+    bars5 = resample(bars_1m, 300)
+    closes1, closes5, closes_h = [b["c"] for b in bars_1m], [b["c"] for b in bars5], [b["c"] for b in bars_1h]
+    e20_5, e50_5 = ema(closes5, 20), ema(closes5, 50)
+    e20_h, e50_h = ema(closes_h, 20), ema(closes_h, 50)
+    e20_1 = ema(closes1, 20)[-1]
+    a1, a5 = atr(bars_1m[-30:], 14), atr(bars5, 14)
+    r_now, r_prev = rsi(closes1, 14), rsi(closes1[:-2], 14)
+    price = bid
+    out["ind"] = {"ema20_5m": e20_5[-1], "ema50_5m": e50_5[-1], "ema20_1h": e20_h[-1], "ema50_1h": e50_h[-1],
+                  "ema20_1m": e20_1, "atr_5m": a5, "atr_5m_pct": a5 / price * 100 if a5 else None, "rsi_1m": r_now,
+                  "spread_pct": spread_pct}
+    if not a5 or a5 / price * 100 < QUIET_PCT:
+        reasons.append(f"Typical 5-min move {a5 / price * 100 if a5 else 0:.3f}% is below {QUIET_PCT}%")
+        out.update(state="quiet", headline="Too quiet: price moves are too small for a stop and target to mean anything.")
+        return out
+    slope5 = e20_5[-1] - e20_5[-4] if len(e20_5) >= 4 else 0.0
+    up5 = e20_5[-1] > e50_5[-1] and slope5 >= 0 and price > e50_5[-1]
+    up_h = e20_h[-1] > e50_h[-1] and price > e50_h[-1]
+    if not (up5 and up_h):
+        if not up5:
+            reasons.append("5-min trend is not up (EMA20 vs EMA50, slope or price)")
+        if not up_h:
+            reasons.append(f"1-hour trend is not up (EMA20 {e20_h[-1]:.6g}, EMA50 {e50_h[-1]:.6g})")
+        out.update(state="avoid", headline="Avoid for now: the 5-minute and 1-hour trends must both be up.")
+        return out
+    reasons.append("Uptrend on both the 5-minute and 1-hour charts")
+    level = min(e20_1, price)                                # buy level, bid terms
+    pay = level + spread                                     # what a buy there would cost
+    dist = max(STOP_ATR * a5, MIN_STOP_PCT / 100 * pay, SPREAD_STOPS * spread)
+    stop, target = pay - dist, pay + REWARD_R * dist         # exits are hit by the bid
+    reward_gross = (target - pay) / pay * 100
+    net_reward, net_risk = reward_gross - fee_pct, dist / pay * 100 + fee_pct
+    out.update(entry=pay, stop=stop, target=target, reward_pct=round(reward_gross, 2))
+    if reward_gross < FEE_MULT * hurdle_pct or net_reward < net_risk:
+        reasons.append(f"After costs the target pays {net_reward:.2f}% against a {net_risk:.2f}% risk")
+        out.update(state="fees", headline=f"Uptrend, but after {hurdle_pct:.2f}% costs the reward ({net_reward:.2f}%) "
+                                          f"doesn't beat the risk ({net_risk:.2f}%). Better to skip.")
+        return out
+    reasons.append(f"After costs: reward {net_reward:.2f}% vs risk {net_risk:.2f}%")
+    near = price <= e20_1 + NEAR_ATR * (a1 or 0)
+    turning = r_now is not None and r_prev is not None and r_now > r_prev and r_prev < 55
+    if near and turning:
+        d = max(STOP_ATR * a5, MIN_STOP_PCT / 100 * ask, SPREAD_STOPS * spread)
+        out.update(state="enter", entry=ask, stop=ask - d, target=ask + REWARD_R * d,
+                   reward_pct=round(REWARD_R * d / ask * 100, 2),
+                   headline="Entry now: pullback in an uptrend on both timeframes, momentum turning up.")
+        reasons.append(f"At the 1-min EMA20 buy level and RSI turned up ({r_prev:.0f} to {r_now:.0f})")
+    elif near:
+        out.update(state="wait", headline="Nearly there: price is at the buy level, waiting for momentum to turn up.")
+    else:
+        reasons.append(f"Price is {(price - level) / price * 100:.2f}% above the buy level; don't chase")
+        out.update(state="wait", headline="Wait for a pullback to the buy level before entering.")
+    return out

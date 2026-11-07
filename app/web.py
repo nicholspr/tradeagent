@@ -1236,7 +1236,8 @@ function nice(x){const p=Math.pow(10,Math.floor(Math.log10(x))),f=x/p;return (f<
 
 // ---- entry signals (rules in app/strategy.py, judged on the server every 30 s)
 const SIG={enter:['Entry now','#22c55e','#052e16'],wait:['Wait','#f59e0b','#2a1d05'],avoid:['Avoid','#ef4444','#2a0a0a'],
-  fees:['Fees too high','#9ca3af','#1f2430'],closed:['Market closed','#9ca3af','#1f2430'],nodata:['No signal yet','#9ca3af','#1f2430']};
+  fees:['Fees too high','#9ca3af','#1f2430'],closed:['Market closed','#9ca3af','#1f2430'],nodata:['No signal yet','#9ca3af','#1f2430'],
+  quiet:['Too quiet','#9ca3af','#1f2430'],paused:['Paused','#a78bfa','#1e1638']};
 const C_ENT='#22c55e';
 function hurdleQ(kind,symbol){if(!kind)return '';const p={amt:100,ask:1,kind,symbol:symbol||'',comm:cfg.comm,fx:cfg.fx};
   return '?hurdle='+((breakEven(p)-1)*100).toFixed(3);}
@@ -1421,10 +1422,9 @@ function autoPaint(){const el=$('dt-auto');if(!el||!auto)return;const now=Date.n
   let lh=(cur&&!inList?'<button class=sec id=dt-aadd style=\"margin:8px 0\">Add '+cur.symbol+' (selected above)</button>':'')
     +(auto.symbols.length?auto.symbols.map(x=>'<div class=dt-arow><div class=sym><b>'+x.symbol+'</b><span>'+(x.name?x.name+' · ':'')+(KL[x.kind]||x.kind)+'</span>'
       +'<span>'+(x.last_checked?'checked '+hm(Date.parse(x.last_checked)/1000):'not checked yet')+'</span></div>'
-      +'<div class=sg><div><i>Fast</i>'+(on(x.fast_on)?sg(x.last_state,x.last_headline):'<span class=muted>off</span>')+'</div>'
-      +'<div><i>Swing</i>'+(on(x.swing_on)?sg(x.swing_state,x.swing_headline):'<span class=muted>off</span>')+'</div></div>'
-      +'<div class=ctl><label class=dt-sw><input type=checkbox data-tog=\"fast\" data-iid=\"'+x.iid+'\"'+(on(x.fast_on)?' checked':'')+'>Fast</label>'
-      +'<label class=dt-sw><input type=checkbox data-tog=\"swing\" data-iid=\"'+x.iid+'\"'+(on(x.swing_on)?' checked':'')+'>Swing</label>'
+      +'<div class=sg>'+Object.keys(S).map(k=>{const st=k==='fast'?x.last_state:x[k+'_state'],hd=k==='fast'?x.last_headline:x[k+'_headline'];
+          return '<div><i>'+(S[k].short||k)+'</i>'+(on(x[k+'_on'])?sg(st,hd):'<span class=muted>off</span>')+'</div>';}).join('')+'</div>'
+      +'<div class=ctl>'+Object.keys(S).map(k=>'<label class=dt-sw><input type=checkbox data-tog=\"'+k+'\" data-iid=\"'+x.iid+'\"'+(on(x[k+'_on'])?' checked':'')+'>'+(S[k].short||k)+'</label>').join('')
       +'<button class=sec data-arm=\"'+x.iid+'\" title=\"Stop testing '+x.symbol+'\">Remove</button></div></div>').join('')
     :'<p class=muted>The test list is empty. Search above to add a symbol.</p>');
   $('dt-alist').innerHTML='<p class=muted style=\"margin:10px 0 0\">'+auto.symbols.length+' symbol'+(auto.symbols.length===1?'':'s')+' on the list</p>'+lh;
@@ -1489,17 +1489,20 @@ def daytrader_page():
              "The <b>target</b> line is the price at which selling would exactly cover all of these costs.</p>"
              "</details></section>"
              "<section class='card dt-auto'><h2>Strategy auto-test (runs on the server, 24/7)</h2>"
-             "<p class=muted>Every minute the server checks each symbol below against two versions of the entry strategy: "
-             "<b>Fast</b> (5-minute trend, 1-minute timing) and <b>Swing</b> (1-hour trend, 15-minute timing, stops and targets "
-             "several times wider, so moves can pay crypto's 2% fees). On every <b>Entry now</b> it opens a theoretical $100 "
-             "trade at the ask (one per symbol per strategy) and closes it at the signal's stop or target, or at the bid "
-             "after 4 hours (fast) or 48 hours (swing). Costs as above. Nothing is sent to eToro. "
+             "<p class=muted>Every minute the server checks each symbol below against three versions of the entry strategy: "
+             "<b>Fast</b> (5-minute trend, 1-minute timing); <b>Fast v2</b> (the same, but it skips quiet markets, needs the "
+             "1-hour trend up too, sets stops at least 0.3% away measured from the price paid, wants the reward after costs to beat "
+             "the risk, trades 24/7 CFDs only in their home market's hours, and cools off for 30 minutes after a stop-out, "
+             "pausing for the day after two); and <b>Swing</b> (1-hour trend, 15-minute timing, stops and targets several times "
+             "wider, so moves can pay crypto's 2% fees). On every <b>Entry now</b> it opens a theoretical $100 trade at the ask "
+             "(one per symbol per strategy) and closes it at the signal's stop or target, or at the bid after 4 hours (fast, "
+             "fast v2) or 48 hours (swing). Costs as above. Nothing is sent to eToro. "
              "This keeps running with the page closed, so the results below show whether the signals make money after fees.</p>"
              "<div id=dt-auto>Loading…</div>"
              "<h3>Test list</h3><div class=dt-search style='max-width:none'><label>Add a symbol (any eToro instrument)</label>"
              "<input id=dt-aq autocomplete=off placeholder='Search by symbol or name, e.g. ETH, XRP, AMD.24-7'>"
              "<div class=dt-results id=dt-ares></div></div>"
-             "<p class=muted style='font-size:12px;margin:6px 0 0'>Switch <b>Fast</b> or <b>Swing</b> off to stop that strategy "
+             "<p class=muted style='font-size:12px;margin:6px 0 0'>Switch a strategy off to stop that strategy "
              "opening new trades in a symbol (an open trade still runs to its stop, target or time limit). "
              "<b>Remove</b> takes the symbol off the list and closes its open trades at the last price.</p>"
              "<div id=dt-alist></div><div id=dt-arest></div></section></div>")

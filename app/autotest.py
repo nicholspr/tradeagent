@@ -23,8 +23,10 @@ from . import daytrader, engine, store, strategy
 
 AMT = 100.0
 COMMISSION = 1.0          # $ per side for shares, as the page's default
-STRATEGIES = {"fast": {"label": "Fast (5-min trend)", "max_hours": 4.0},
-              "swing": {"label": "Swing (1-hour trend)", "max_hours": 48.0}}
+STRATEGIES = {"fast": {"label": "Fast (5-min trend)", "short": "Fast", "max_hours": 4.0},
+              "fast2": {"label": "Fast v2 (filtered)", "short": "Fast v2", "max_hours": 4.0,
+                        "cooldown_min": 30, "max_stops_day": 2},
+              "swing": {"label": "Swing (1-hour trend)", "short": "Swing", "max_hours": 48.0}}
 MAX_HOURS = STRATEGIES["fast"]["max_hours"]
 SEED = [(100000, "BTC", "crypto"), (100063, "SOL", "crypto"), (100340, "SUI", "crypto"),
         (100085, "AVAX", "crypto"), (15200, "TSLA.24-7", "cfd"), (15574, "NVDA.24-7", "cfd")]
@@ -54,7 +56,8 @@ def _ensure() -> None:
             c.execute("ALTER TABLE autotrades ADD COLUMN strategy TEXT DEFAULT 'fast'")
         scols = [r["name"] for r in c.execute("PRAGMA table_info(autotest_symbols)")]
         for col, kind in (("swing_state", "TEXT"), ("swing_headline", "TEXT"), ("name", "TEXT"),
-                          ("fast_on", "INTEGER DEFAULT 1"), ("swing_on", "INTEGER DEFAULT 1")):
+                          ("fast_on", "INTEGER DEFAULT 1"), ("swing_on", "INTEGER DEFAULT 1"),
+                          ("fast2_state", "TEXT"), ("fast2_headline", "TEXT"), ("fast2_on", "INTEGER DEFAULT 1")):
             if col not in scols:
                 c.execute(f"ALTER TABLE autotest_symbols ADD COLUMN {col} {kind}")
         if not c.execute("SELECT 1 FROM autotest_meta WHERE key='seeded'").fetchone():
@@ -109,8 +112,8 @@ def add_symbol(iid: int, symbol: str | None = None, kind: str | None = None, nam
             raise ValueError(f"eToro has no instrument {iid}")
         symbol, kind, name = symbol or sym, kind or kd, name or nm
     with store._lock, store.connect() as c:
-        c.execute("INSERT OR IGNORE INTO autotest_symbols(iid, symbol, kind, name, added, fast_on, swing_on) "
-                  "VALUES (?,?,?,?,?,1,1)", (int(iid), symbol, kind, name, _now_iso()))
+        c.execute("INSERT OR IGNORE INTO autotest_symbols(iid, symbol, kind, name, added, fast_on, swing_on, fast2_on) "
+                  "VALUES (?,?,?,?,?,1,1,1)", (int(iid), symbol, kind, name, _now_iso()))
     store.log("info", f"auto-test: added {symbol}")
     return {"iid": int(iid), "symbol": symbol, "kind": kind, "name": name}
 
@@ -214,6 +217,29 @@ def tick() -> None:
                           (str(e)[:200], _now_iso(now), s["iid"]))
 
 
+def blocked(iid: int, key: str, now: float) -> str | None:
+    """Why a strategy may not open a trade in this symbol right now (cooling off after a stop, or paused
+    for the day after too many stops), or None. Only strategies that set these limits are affected."""
+    cfg = STRATEGIES[key]
+    cool, most = cfg.get("cooldown_min"), cfg.get("max_stops_day")
+    if not cool and not most:
+        return None
+    from zoneinfo import ZoneInfo
+    from . import config
+    tz = ZoneInfo(config.TZ)
+    day0 = datetime.fromtimestamp(now, tz).replace(hour=0, minute=0, second=0, microsecond=0).timestamp()
+    with store._lock, store.connect() as c:
+        stops = [r["closed_ts"] for r in c.execute(
+            "SELECT closed_ts FROM autotrades WHERE iid=? AND COALESCE(strategy,'fast')=? AND status='closed' AND reason='stop' "
+            "AND closed_ts >= ? ORDER BY closed_ts", (int(iid), key, min(day0, now - (cool or 0) * 60)))]
+    if most and sum(t >= day0 for t in stops) >= most:
+        return f"Paused for the rest of today after {most} stop-outs."
+    if cool and stops and now - stops[-1] < cool * 60:
+        until = datetime.fromtimestamp(stops[-1] + cool * 60, tz).strftime("%H:%M")
+        return f"Cooling off after a stop-out until {until}."
+    return None
+
+
 def _tick_one(s: dict, r: dict | None, now: float) -> None:
     iid, sym, kind = s["iid"], s["symbol"], s["kind"]
     bid = ask = None
@@ -226,14 +252,22 @@ def _tick_one(s: dict, r: dict | None, now: float) -> None:
     hurdle = hurdle_pct(kind, sym, ask, bid) if bid else strategy.default_hurdle(kind)
     sigs = {"fast": strategy.evaluate(bars1, bid, ask, is_open, hurdle)}
     try:
-        sigs["swing"] = strategy.evaluate_swing(_bars(iid, "FifteenMinutes"), _bars(iid, "OneHour"), bid, ask, is_open, hurdle)
+        bars_h = _bars(iid, "OneHour")
+        sigs["swing"] = strategy.evaluate_swing(_bars(iid, "FifteenMinutes"), bars_h, bid, ask, is_open, hurdle)
+        sigs["fast2"] = strategy.evaluate_fast2(bars1, bars_h, bid, ask, is_open, hurdle, kind, sym,
+                                                datetime.fromtimestamp(now, timezone.utc))
     except Exception as e:  # noqa: BLE001
-        sigs["swing"] = {"state": "error", "headline": str(e)[:200]}
+        for k in ("swing", "fast2"):
+            sigs.setdefault(k, {"state": "error", "headline": str(e)[:200]})
+    for key in STRATEGIES:                                  # show cooling-off / paused on the page
+        why = blocked(iid, key, now)
+        if why and not _open_trade(iid, key):
+            sigs[key] = {**sigs[key], "state": "paused", "headline": why, "blocked": True}
     with store._lock, store.connect() as c:
         c.execute("UPDATE autotest_symbols SET last_state=?, last_headline=?, swing_state=?, swing_headline=?, "
-                  "last_checked=?, last_bid=? WHERE iid=?",
+                  "fast2_state=?, fast2_headline=?, last_checked=?, last_bid=? WHERE iid=?",
                   (sigs["fast"]["state"], sigs["fast"]["headline"], sigs["swing"]["state"], sigs["swing"]["headline"],
-                   _now_iso(now), bid, iid))
+                   sigs["fast2"]["state"], sigs["fast2"]["headline"], _now_iso(now), bid, iid))
     for key, cfg in STRATEGIES.items():
         t = _open_trade(iid, key)
         ex = None
@@ -249,6 +283,8 @@ def _tick_one(s: dict, r: dict | None, now: float) -> None:
         sig = sigs[key]
         if s.get(f"{key}_on", 1) in (0, "0"):
             continue                                        # strategy switched off for this symbol
+        if sig.get("blocked") or blocked(iid, key, now):
+            continue                                        # cooling off / paused after stop-outs
         if sig.get("state") == "enter" and ask is not None:
             with store._lock, store.connect() as c:
                 c.execute("INSERT INTO autotrades(iid, symbol, kind, strategy, opened, opened_ts, amt, entry, bid0, stop, "
@@ -303,7 +339,8 @@ def digest(since_ts: float) -> list[str]:
         out.append(f"  open: {t['symbol']} ({t['strategy']}) since {_local_hm(t['opened_ts'])}, net if closed now ${net}")
     for b in s["by_symbol"]:
         out.append(f"  {b['symbol']} ({b['strategy']}): {b['trades']} trades, {b['wins']} in profit, net ${b['net']:+.2f}")
-    sig = [f"{x['symbol']} fast {x.get('last_state') or '-'} / swing {x.get('swing_state') or '-'}" for x in s["symbols"]]
+    sig = [f"{x['symbol']} fast {x.get('last_state') or '-'} / v2 {x.get('fast2_state') or '-'} / swing {x.get('swing_state') or '-'}"
+           for x in s["symbols"]]
     if sig:
         out.append("  signals now: " + "; ".join(sig))
     return out

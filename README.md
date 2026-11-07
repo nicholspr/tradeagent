@@ -256,13 +256,19 @@ A first step towards intraday tools. Search for any eToro instrument by symbol o
   4. **Fee filter:** the move to target must be at least 1.5 × the round-trip cost (eToro fees from the cost settings plus the live spread). If not, the verdict is **Fees too high** rather than a trade.
 
   Verdicts: Entry now, Wait, Avoid (no uptrend), Fees too high, Market closed. The symbol card shows the verdict, entry, stop, target, move-to-target vs costs, and a "Why" list of the readings behind it; each open trade shows a compact version, and its chart gets a green dotted **suggested entry** line. **Turn on entry alerts** shows a pop-up (and a browser notification, if you allow it) when any watched symbol changes to Entry now, while the page is open. It's a starting rule set to test with paper trades, not a proven edge. On crypto, eToro's 2% round trip means it will often say Fees too high; 24/7 CFDs (`.24-7` symbols, costed as spread only) and quieter fee-free assets are where it can fire.
-- **Strategy auto-test (server-side, 24/7).** A card at the bottom of the page tests the entry strategy on its own, with the page closed. Two versions run side by side on every symbol (`app/autotest.py`):
+- **Strategy auto-test (server-side, 24/7).** A card at the bottom of the page tests the entry strategy on its own, with the page closed. Three versions run side by side on every symbol (`app/autotest.py`):
   - **Fast:** 5-minute trend, 1-minute timing (the signal shown on the page); trades close at stop, target or after **4 hours**.
+  - **Fast v2:** the fast strategy with the fixes its first live results suggested (three SKHY.24-7 stop-outs on a quiet Saturday, 7 Nov 2026), run side by side so the two can be compared:
+    - **quiet filter:** no trade when the typical 5-minute move (ATR) is below 0.15% of the price ("Too quiet");
+    - **1-hour trend must agree:** the 5-minute and 1-hour trends must both be up;
+    - **wider, spread-aware stops:** the stop is at least 0.3% (and at least 3 spreads) below the price actually paid (the ask), the target twice that distance above, and the reward after costs must be at least the risk after costs;
+    - **home-market hours for 24/7 CFDs:** US names and pre-IPO CFDs only 09:30–16:00 New York time, SK hynix 09:00–15:30 Seoul time, Monday to Friday (no weekend or overnight prices);
+    - **cooling off:** no new trade in a symbol for 30 minutes after a stop-out, and none for the rest of the day (London time) after two stop-outs ("Paused").
   - **Swing:** the same rules on a 1-hour trend with 15-minute timing, so stops and targets come out several times wider (typically 3–6% to target), enough to clear crypto's 2% round trip; trades close at stop, target or after **48 hours**.
 
   Every minute the server checks each symbol: on **Entry now** it records a theoretical $100 buy at the live ask, one open trade per symbol per strategy, and closes it at the signal's stop or target, checking every 1-minute candle since the entry (if one candle touched both, the stop is assumed first, the cautious choice), or at the bid at the time limit. Costs follow the same eToro rules as the paper trades (share commission at the $1 default).
 
-  The card shows, for each strategy, closed trades, % in profit after fees, targets/stops/time-outs, gross price moves, fees paid and total net; then each tested symbol with its fast and swing signals now, open auto-test trades with their live net, results by symbol and strategy, and every closed trade. **Editing the test list:** search for any eToro instrument in the card's **Test list** box to add it (its symbol, name and cost type are looked up on eToro, so the right fees apply), or press **Add <symbol>** for the one selected at the top. Each symbol has **Fast** and **Swing** switches: switching one off stops that strategy opening new trades in that symbol (a trade already open still runs to its stop, target or time limit), e.g. swing only for 2%-fee crypto. **Remove** takes a symbol off the list and closes its open trades at the last price. It starts with BTC, SOL, SUI, AVAX, TSLA.24-7 and NVDA.24-7. The **daily summary email** includes an auto-test section: today's and all-time results per strategy, open trades, results by symbol and each symbol's signals.
+  The card shows, for each strategy, closed trades, % in profit after fees, targets/stops/time-outs, gross price moves, fees paid and total net; then each tested symbol with its fast and swing signals now, open auto-test trades with their live net, results by symbol and strategy, and every closed trade. **Editing the test list:** search for any eToro instrument in the card's **Test list** box to add it (its symbol, name and cost type are looked up on eToro, so the right fees apply), or press **Add <symbol>** for the one selected at the top. Each symbol has **Fast**, **Fast v2** and **Swing** switches: switching one off stops that strategy opening new trades in that symbol (a trade already open still runs to its stop, target or time limit), e.g. swing only for 2%-fee crypto. **Remove** takes a symbol off the list and closes its open trades at the last price. It starts with BTC, SOL, SUI, AVAX, TSLA.24-7 and NVDA.24-7. The **daily summary email** includes an auto-test section: today's and all-time results per strategy, open trades, results by symbol and each symbol's signals.
 - Charts show the **last hour**: 1-minute candles from eToro, replaced by 30-second candles built from the live price while the page is open.
 - Nothing is ever sent to eToro from this page.
 
@@ -375,7 +381,7 @@ Removing an entry does not sell it; holdings stay until sold. London (`.L`) inst
 
 ```bash
 pip install -r requirements.txt
-python -m pytest -q tests          # 75 tests, all offline (fakes for eToro, Claude, email)
+python -m pytest -q tests          # 77 tests, all offline (fakes for eToro, Claude, email)
 DATA_DIR=./data uvicorn app.web:app --reload
 ```
 
@@ -390,7 +396,7 @@ On Windows, `run-local.bat` runs the full app at `http://localhost:8000/`. It al
 | `app/engine.py` | Analysis, proposals, approval, execution, the queue, scheduled runs, pre-flight, overrides, the daily summary, the audit trail and one-off fixes. |
 | `app/etoro.py` prices | `rates()` takes bid/ask from eToro's v2 rates endpoint whenever it is newer than v1 (v1 was seen returning crypto prices hours old); v1 still supplies the currency conversion rates. |
 | `app/autotest.py` | Server-side auto-test of the fast and swing entry strategies: $100 paper trades on every Entry now, closed at stop/target/time limit, checked every minute; digest for the daily email. |
-| `app/strategy.py` | Day trader entry signals, fast (5-min trend, 1-min timing) and swing (1-hour trend, 15-min timing): ATR stop/target, fee filter. |
+| `app/strategy.py` | Day trader entry signals: fast (5-min trend, 1-min timing), fast v2 (plus quiet filter, 1-hour trend, spread-aware stops, home-market hours) and swing (1-hour trend, 15-min timing); ATR stops/targets and fee filter. |
 | `app/daytrader.py` | Day trader test page: eToro instrument search, live price sampling and 30-second candles. |
 | `app/terms.py` | Holding period per symbol; the short-term agent note; stop-loss and take-profit extraction and sanity checks. |
 | `app/levels.py` | Watch levels: extraction, the overnight check, queue priority, agent notes and backfill. |

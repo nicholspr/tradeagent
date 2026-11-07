@@ -2001,3 +2001,68 @@ def test_watch_levels_off_the_watchlist_say_so_and_can_be_analysed(eng, monkeypa
         assert c.post("/run", data={"symbol": "TSLA"}, follow_redirects=False).status_code == 404   # no level, not listed
         ov = c.get("/").text
         assert "Not on watchlist" in ov and "preflight?symbol=IUHC.L" in ov
+
+
+def test_fast2_filters():
+    import math
+    from datetime import datetime as _dt, timezone as _tz
+    from app import strategy as st
+    mon = _dt(2026, 11, 9, 15, 0, tzinfo=_tz.utc)            # US market open
+    sat = _dt(2026, 11, 7, 20, 0, tzinfo=_tz.utc)
+
+    def dip(i):
+        p = 100 * (1 + 0.0004 * i) + 0.05 * math.sin(i / 3)
+        if i >= 290:
+            p -= (min(i, 297) - 290) * 0.15
+        if i >= 298:
+            p += (i - 297) * 0.03
+        return p
+    b1 = _bars(dip)
+    h_up = _bars(lambda i: 80 + 0.4 * i, n=100)
+    h_down = _bars(lambda i: 200 - 0.8 * i, n=100)
+    bid = b1[-1]["c"]
+    ask = bid * 1.0002
+    s = st.evaluate_fast2(b1, h_up, bid, ask, True, 0.02 + 0.02, "cfd", "TSLA.24-7", mon)
+    assert s["state"] == "enter" and s["entry"] == ask                          # bought at the ask
+    assert (ask - s["stop"]) / ask >= 0.003 - 1e-12                              # stop at least 0.3% away
+    assert abs((s["target"] - ask) - 2 * (ask - s["stop"])) < 1e-9
+    assert st.evaluate_fast2(b1, h_up, bid, ask, True, 0.04, "cfd", "TSLA.24-7", sat)["state"] == "closed"   # weekend
+    assert st.evaluate_fast2(b1, h_down, bid, ask, True, 0.04, "cfd", "TSLA.24-7", mon)["state"] == "avoid"  # 1h down
+    assert st.evaluate_fast2(b1, h_up, bid, ask, True, 2.04, "crypto", "SOL", sat)["state"] == "fees"        # 2% fees
+    quiet = _bars(lambda i: 100 + 0.004 * i + 0.002 * math.sin(i))
+    for b in quiet:
+        b["h"], b["l"] = max(b["o"], b["c"]) + 0.003, min(b["o"], b["c"]) - 0.003
+    s = st.evaluate_fast2(quiet, h_up, quiet[-1]["c"], quiet[-1]["c"], True, 0.02, "cfd", "TSLA.24-7", mon)
+    assert s["state"] == "quiet"
+    assert st.home_open("SKHY.24-7", _dt(2026, 11, 9, 1, 0, tzinfo=_tz.utc)) and not st.home_open("SKHY.24-7", mon)
+
+
+def test_fast2_cooldown_and_daily_pause(eng):
+    import time as _t
+    engine, store, sent, fs, rating = eng
+    from app import autotest
+    autotest._ensure()
+    now = _t.time()
+
+    def stop_at(ts, key="fast2"):
+        with store._lock, store.connect() as c:
+            c.execute("INSERT INTO autotrades(iid, symbol, kind, strategy, opened_ts, amt, entry, stop, target, status, "
+                      "closed_ts, exit, reason, gross, fees, net) VALUES (7,'X','cfd',?,?,100,10,9.9,10.2,'closed',?,9.9,'stop',-1,0,-1)",
+                      (key, ts - 600, ts))
+    assert autotest.blocked(7, "fast2", now) is None
+    stop_at(now - 10 * 60)
+    assert autotest.blocked(7, "fast2", now).startswith("Cooling off")               # 10 minutes after a stop
+    assert autotest.blocked(7, "fast2", now + 25 * 60) is None                        # 35 minutes after
+    stop_at(now - 5 * 60, key="fast")
+    assert autotest.blocked(7, "fast", now) is None                                   # the original fast has no cooldown
+    stop_at(now - 60 * 60 + 1 if (now - 3600) > 0 else now)
+    from zoneinfo import ZoneInfo
+    from app import config
+    from datetime import datetime as _dt
+    midday = _dt.fromtimestamp(now, ZoneInfo(config.TZ)).replace(hour=12, minute=0).timestamp()
+    with store._lock, store.connect() as c:
+        c.execute("DELETE FROM autotrades WHERE iid=7")
+    stop_at(midday - 3 * 3600)
+    stop_at(midday - 2 * 3600)
+    assert autotest.blocked(7, "fast2", midday).startswith("Paused for the rest of today")   # 2 stops today
+    assert autotest.blocked(7, "fast2", midday + 24 * 3600) is None                            # a new day
