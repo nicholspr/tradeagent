@@ -1898,6 +1898,11 @@ def test_autotest_opens_on_signal_and_closes_at_stop_target_or_time(eng, monkeyp
     closed = s["closed"][0]
     assert closed["reason"] == "stop" and closed["exit"] == t["stop"] and closed["net"] < 0
     assert s["total"]["trades"] == 1 and s["total"]["stops"] == 1
+    assert s["totals"]["fast"]["trades"] == 1 and s["totals"]["swing"]["trades"] == 0 and closed["strategy"] == "fast"
+    assert s["symbols"][0]["swing_state"]                                 # the swing strategy is checked too
+    lines = autotest.digest(0)
+    assert lines[0].startswith("Strategy auto-test") and any("Fast (5-min trend)" in l and "1 closed" in l for l in lines)
+    assert any("TSLA.24-7 (fast): 1 trades, 0 in profit" in l for l in lines)
 
     # check_exit directly: target, and the time limit
     tr = {"opened_ts": 1000.0, "stop": 90.0, "target": 110.0}
@@ -1910,3 +1915,33 @@ def test_autotest_opens_on_signal_and_closes_at_stop_target_or_time(eng, monkeyp
     autotest.remove_symbol(15200)
     assert autotest.summary()["symbols"] == []
     daytrader._cache.clear()
+
+
+def test_swing_strategy_targets_are_wide_enough_for_crypto_fees():
+    import math
+    from app import strategy as st
+
+    def mk(fn, n, step, t0=1_800_000_000, wig=1.004):
+        bars, prev = [], fn(0)
+        for i in range(n):
+            c = fn(i)
+            bars.append({"t": t0 + step * i, "o": prev, "h": max(prev, c) * wig, "l": min(prev, c) / wig, "c": c})
+            prev = c
+        return bars
+    h1 = mk(lambda i: 100 * (1 + 0.003 * i) + 0.3 * math.sin(i / 2), 100, 3600, wig=1.01)    # strong hourly uptrend
+
+    def m15(i):
+        p = 128 + 0.05 * i + 0.1 * math.sin(i / 3)
+        if i >= 90:
+            p -= (min(i, 97) - 90) * 0.35
+        if i >= 98:
+            p += (i - 97) * 0.1
+        return p
+    q = mk(m15, 100, 900, t0=1_800_000_000 + 99 * 3600 - 100 * 900)
+    s = st.evaluate_swing(q, h1, q[-1]["c"], q[-1]["c"] * 1.0001, True, 2.03)
+    assert s["key"] == "swing" and s["state"] in ("enter", "wait")
+    assert s["reward_pct"] > 1.5 * 2.03                    # can pay crypto fees, unlike the fast version
+    assert s["stop"] < s["entry"] < s["target"]
+    down = mk(lambda i: 100 * (1 - 0.003 * i), 100, 3600)
+    assert st.evaluate_swing(q, down, q[-1]["c"], q[-1]["c"], True, 2.03)["state"] == "avoid"
+    assert st.evaluate_swing(q[:10], h1, 1, 1, True, 2)["state"] == "nodata"

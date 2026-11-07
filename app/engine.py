@@ -648,6 +648,11 @@ def daily_summary() -> None:
         lines += ["", "Watch levels:"] + [f"  {lv['ticker']}: {levels.describe(lv)} [{'MET' if lv['status'] == 'triggered' else 'watching'}]"
                                           for lv in watching]
     try:
+        from . import autotest
+        lines += [""] + autotest.digest(datetime.fromisoformat(since).timestamp()) + [f"  {base}/daytrader"]
+    except Exception as e:  # noqa: BLE001
+        lines += ["", f"Strategy auto-test unavailable: {e}"]
+    try:
         from . import scorecard
         lines += ["", "Scorecard: " + scorecard.headline(scorecard.evaluate(client(), store.runs(1000))),
                   f"  {base}/scorecard"]

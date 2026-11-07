@@ -1,13 +1,16 @@
 """Strategy auto-test: theoretical $100 paper trades opened and closed by the server, 24/7.
 
-Every minute, for each symbol on the auto-test list:
-- if it has no open auto-test trade and the strategy (app/strategy.py) says "Entry now",
-  a paper buy of $100 is recorded at the live ask, with the signal's stop and target;
+Two versions of the entry strategy (app/strategy.py) run side by side on every symbol:
+- fast:  5-minute trend, 1-minute timing; trades close after at most 4 hours;
+- swing: 1-hour trend, 15-minute timing, wider stops and targets; at most 48 hours.
+
+Every minute, for each symbol on the list and each strategy:
+- with no open trade for that symbol and strategy, an "Entry now" signal records a $100 paper buy
+  at the live ask, with the signal's stop and target;
 - an open trade is closed at its stop or target, using every 1-minute candle since it opened
   (if one candle touched both, the stop is assumed to have come first, the cautious choice),
-  or at the live bid after MAX_HOURS.
+  or at the live bid when its time limit is reached.
 Costs follow the same eToro rules as the day trader page. Nothing is ever sent to eToro.
-Results build up the strategy's real hit rate after fees, symbol by symbol.
 """
 from __future__ import annotations
 
@@ -19,8 +22,10 @@ from datetime import datetime, timezone
 from . import daytrader, engine, store, strategy
 
 AMT = 100.0
-MAX_HOURS = 4.0
 COMMISSION = 1.0          # $ per side for shares, as the page's default
+STRATEGIES = {"fast": {"label": "Fast (5-min trend)", "max_hours": 4.0},
+              "swing": {"label": "Swing (1-hour trend)", "max_hours": 48.0}}
+MAX_HOURS = STRATEGIES["fast"]["max_hours"]
 SEED = [(100000, "BTC", "crypto"), (100063, "SOL", "crypto"), (100340, "SUI", "crypto"),
         (100085, "AVAX", "crypto"), (15200, "TSLA.24-7", "cfd"), (15574, "NVDA.24-7", "cfd")]
 
@@ -44,6 +49,13 @@ def _now_iso(ts: float | None = None) -> str:
 def _ensure() -> None:
     with store._lock, store.connect() as c:
         c.executescript(CREATE)
+        cols = [r["name"] for r in c.execute("PRAGMA table_info(autotrades)")]
+        if "strategy" not in cols:
+            c.execute("ALTER TABLE autotrades ADD COLUMN strategy TEXT DEFAULT 'fast'")
+        scols = [r["name"] for r in c.execute("PRAGMA table_info(autotest_symbols)")]
+        for col in ("swing_state", "swing_headline"):
+            if col not in scols:
+                c.execute(f"ALTER TABLE autotest_symbols ADD COLUMN {col} TEXT")
         if not c.execute("SELECT 1 FROM autotest_meta WHERE key='seeded'").fetchone():
             for iid, sym, kind in SEED:
                 c.execute("INSERT OR IGNORE INTO autotest_symbols(iid, symbol, kind, added) VALUES (?,?,?,?)",
@@ -95,19 +107,21 @@ def add_symbol(iid: int, symbol: str, kind: str) -> None:
 
 
 def remove_symbol(iid: int) -> None:
-    """Stop testing a symbol. An open trade in it is closed at the last checked price."""
+    """Stop testing a symbol. Open trades in it are closed at the last checked price."""
     _ensure()
-    t = _open_trade(iid)
-    if t:
-        _close(t, t["last_bid"] or t["bid0"], "symbol removed", time.time())
+    for key in STRATEGIES:
+        t = _open_trade(iid, key)
+        if t:
+            _close(t, t["last_bid"] or t["bid0"], "symbol removed", time.time())
     with store._lock, store.connect() as c:
         c.execute("DELETE FROM autotest_symbols WHERE iid=?", (int(iid),))
     store.log("info", f"auto-test: removed instrument {iid}")
 
 
-def _open_trade(iid: int) -> dict | None:
+def _open_trade(iid: int, key: str = "fast") -> dict | None:
     with store._lock, store.connect() as c:
-        r = c.execute("SELECT * FROM autotrades WHERE iid=? AND status='open' ORDER BY id DESC LIMIT 1", (int(iid),)).fetchone()
+        r = c.execute("SELECT * FROM autotrades WHERE iid=? AND status='open' AND COALESCE(strategy,'fast')=? "
+                      "ORDER BY id DESC LIMIT 1", (int(iid), key)).fetchone()
     return dict(r) if r else None
 
 
@@ -117,10 +131,12 @@ def _close(t: dict, exit_bid: float, reason: str, ts: float) -> None:
         c.execute("UPDATE autotrades SET status='closed', closed=?, closed_ts=?, exit=?, reason=?, gross=?, fees=?, net=? "
                   "WHERE id=? AND status='open'",
                   (_now_iso(ts), ts, exit_bid, reason, c_["gross"], c_["fees"], c_["net"], t["id"]))
-    store.log("info", f"auto-test: closed {t['symbol']} ({reason}) at {exit_bid:.6g}, net ${c_['net']:+.2f}")
+    store.log("info", f"auto-test {t.get('strategy') or 'fast'}: closed {t['symbol']} ({reason}) at {exit_bid:.6g}, "
+                      f"net ${c_['net']:+.2f}")
 
 
-def check_exit(t: dict, bars: list[dict], bid: float | None, is_open: bool, now: float) -> tuple[str, float] | None:
+def check_exit(t: dict, bars: list[dict], bid: float | None, is_open: bool, now: float,
+               max_hours: float = MAX_HOURS) -> tuple[str, float] | None:
     """(reason, exit price) if the trade should close now, else None."""
     first = (int(t["opened_ts"] // 60) + 1) * 60          # candles that started after the entry minute
     for b in bars:
@@ -135,20 +151,26 @@ def check_exit(t: dict, bars: list[dict], bid: float | None, is_open: bool, now:
             return "stop", bid
         if bid >= t["target"]:
             return "target", bid
-        if now - t["opened_ts"] >= MAX_HOURS * 3600:
-            return f"time limit ({MAX_HOURS:g}h)", bid
+        if now - t["opened_ts"] >= max_hours * 3600:
+            return f"time limit ({max_hours:g}h)", bid
     return None
 
 
-def _bars(iid: int) -> list[dict]:
-    ec = engine.client()
-    long = daytrader._cached(("hist", iid), 25, lambda: ec.candles(iid, "OneMinute", 300))
+def _to_bars(candles: list[dict]) -> list[dict]:
     out = []
-    for c in long:
+    for c in candles:
         t = daytrader._parse_ts(c["date"])
         if t is not None:
             out.append({"t": t, "o": c["open"], "h": c["high"], "l": c["low"], "c": c["close"]})
     return out
+
+
+def _bars(iid: int, interval: str = "OneMinute") -> list[dict]:
+    ec = engine.client()
+    if interval == "OneMinute":       # shared with the day trader page's cache
+        return _to_bars(daytrader._cached(("hist", iid), 25, lambda: ec.candles(iid, "OneMinute", 300)))
+    ttl = {"FifteenMinutes": 120, "OneHour": 600}[interval]
+    return _to_bars(daytrader._cached((interval, iid), ttl, lambda: ec.candles(iid, interval, 100)))
 
 
 def tick() -> None:
@@ -180,29 +202,44 @@ def _tick_one(s: dict, r: dict | None, now: float) -> None:
         bid, ask = float(r["bid"]), float(r.get("ask") or r["bid"])
         ts = daytrader._parse_ts(r.get("date", "")) or now
         is_open = now - ts <= daytrader.STALE_AFTER
-    bars = _bars(iid)
-    t = _open_trade(iid)
-    if t:
-        ex = check_exit(t, bars, bid, is_open, now)
-        if ex:
-            _close(t, ex[1], ex[0], now)
-        elif bid is not None:
-            with store._lock, store.connect() as c:
-                c.execute("UPDATE autotrades SET last_bid=?, checked_ts=? WHERE id=?", (bid, now, t["id"]))
+    bars1 = _bars(iid)
     hurdle = hurdle_pct(kind, sym, ask, bid) if bid else strategy.default_hurdle(kind)
-    sig = strategy.evaluate(bars, bid, ask, is_open, hurdle)
+    sigs = {"fast": strategy.evaluate(bars1, bid, ask, is_open, hurdle)}
+    try:
+        sigs["swing"] = strategy.evaluate_swing(_bars(iid, "FifteenMinutes"), _bars(iid, "OneHour"), bid, ask, is_open, hurdle)
+    except Exception as e:  # noqa: BLE001
+        sigs["swing"] = {"state": "error", "headline": str(e)[:200]}
     with store._lock, store.connect() as c:
-        c.execute("UPDATE autotest_symbols SET last_state=?, last_headline=?, last_checked=?, last_bid=? WHERE iid=?",
-                  (sig["state"], sig["headline"], _now_iso(now), bid, iid))
-    if t and not ex:
-        return                                              # one trade per symbol at a time
-    if sig["state"] == "enter" and ask is not None:
-        with store._lock, store.connect() as c:
-            c.execute("INSERT INTO autotrades(iid, symbol, kind, opened, opened_ts, amt, entry, bid0, stop, target, hurdle, "
-                      "reasons, status, checked_ts, last_bid) VALUES (?,?,?,?,?,?,?,?,?,?,?,?, 'open', ?, ?)",
-                      (iid, sym, kind, _now_iso(now), now, AMT, ask, bid, sig["stop"], sig["target"], hurdle,
-                       json.dumps(sig["reasons"]), now, bid))
-        store.log("info", f"auto-test: opened {sym} at {ask:.6g} (stop {sig['stop']:.6g}, target {sig['target']:.6g})")
+        c.execute("UPDATE autotest_symbols SET last_state=?, last_headline=?, swing_state=?, swing_headline=?, "
+                  "last_checked=?, last_bid=? WHERE iid=?",
+                  (sigs["fast"]["state"], sigs["fast"]["headline"], sigs["swing"]["state"], sigs["swing"]["headline"],
+                   _now_iso(now), bid, iid))
+    for key, cfg in STRATEGIES.items():
+        t = _open_trade(iid, key)
+        ex = None
+        if t:
+            ex = check_exit(t, bars1, bid, is_open, now, cfg["max_hours"])
+            if ex:
+                _close(t, ex[1], ex[0], now)
+            elif bid is not None:
+                with store._lock, store.connect() as c:
+                    c.execute("UPDATE autotrades SET last_bid=?, checked_ts=? WHERE id=?", (bid, now, t["id"]))
+            if not ex:
+                continue                                    # one trade per symbol per strategy
+        sig = sigs[key]
+        if sig.get("state") == "enter" and ask is not None:
+            with store._lock, store.connect() as c:
+                c.execute("INSERT INTO autotrades(iid, symbol, kind, strategy, opened, opened_ts, amt, entry, bid0, stop, "
+                          "target, hurdle, reasons, status, checked_ts, last_bid) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?, 'open', ?, ?)",
+                          (iid, sym, kind, key, _now_iso(now), now, AMT, ask, bid, sig["stop"], sig["target"], hurdle,
+                           json.dumps(sig["reasons"]), now, bid))
+            store.log("info", f"auto-test {key}: opened {sym} at {ask:.6g} (stop {sig['stop']:.6g}, target {sig['target']:.6g})")
+
+
+def _stats(rows: list[dict]) -> dict:
+    return {"trades": len(rows), "wins": sum(t["net"] > 0 for t in rows), "net": sum(t["net"] for t in rows),
+            "fees": sum(t["fees"] for t in rows), "gross": sum(t["gross"] for t in rows),
+            "targets": sum(t["reason"] == "target" for t in rows), "stops": sum(t["reason"] == "stop" for t in rows)}
 
 
 def summary(limit: int = 50) -> dict:
@@ -211,23 +248,49 @@ def summary(limit: int = 50) -> dict:
     with store._lock, store.connect() as c:
         open_ = [dict(r) for r in c.execute("SELECT * FROM autotrades WHERE status='open' ORDER BY opened_ts DESC")]
         closed = [dict(r) for r in c.execute("SELECT * FROM autotrades WHERE status='closed' ORDER BY closed_ts DESC LIMIT ?", (limit,))]
-        allc = [dict(r) for r in c.execute("SELECT symbol, net, fees, gross, reason FROM autotrades WHERE status='closed'")]
+        allc = [dict(r) for r in c.execute("SELECT symbol, COALESCE(strategy,'fast') AS strategy, net, fees, gross, reason, "
+                                           "closed_ts FROM autotrades WHERE status='closed'")]
+    for t in open_ + closed:
+        t["strategy"] = t.get("strategy") or "fast"
+        t.pop("reasons", None)
     for t in open_:
         if t["last_bid"]:
             t.update({k: v for k, v in costs(t["kind"], t["symbol"], t["amt"], t["entry"], t["last_bid"]).items() if k != "lines"})
-        t.pop("reasons", None)
-    for t in closed:
-        t.pop("reasons", None)
-    by: dict[str, dict] = {}
+    by: dict[tuple, list] = {}
     for t in allc:
-        b = by.setdefault(t["symbol"], {"symbol": t["symbol"], "trades": 0, "wins": 0, "net": 0.0, "fees": 0.0, "gross": 0.0})
-        b["trades"] += 1
-        b["wins"] += t["net"] > 0
-        b["net"] += t["net"]
-        b["fees"] += t["fees"]
-        b["gross"] += t["gross"]
-    total = {"trades": len(allc), "wins": sum(t["net"] > 0 for t in allc), "net": sum(t["net"] for t in allc),
-             "fees": sum(t["fees"] for t in allc), "gross": sum(t["gross"] for t in allc),
-             "targets": sum(t["reason"] == "target" for t in allc), "stops": sum(t["reason"] == "stop" for t in allc)}
-    return {"symbols": symbols(), "open": open_, "closed": closed, "by_symbol": sorted(by.values(), key=lambda b: -b["trades"]),
-            "total": total, "max_hours": MAX_HOURS, "amt": AMT}
+        by.setdefault((t["strategy"], t["symbol"]), []).append(t)
+    by_symbol = sorted(({"strategy": k[0], "symbol": k[1], **_stats(v)} for k, v in by.items()),
+                       key=lambda b: (b["strategy"], -b["trades"]))
+    totals = {key: _stats([t for t in allc if t["strategy"] == key]) for key in STRATEGIES}
+    return {"symbols": symbols(), "open": open_, "closed": closed, "by_symbol": by_symbol, "totals": totals,
+            "total": _stats(allc), "strategies": STRATEGIES, "amt": AMT}
+
+
+def digest(since_ts: float) -> list[str]:
+    """Plain-text lines for the daily summary email."""
+    s = summary(500)
+    out = ["Strategy auto-test (theoretical $100 trades, both strategies):"]
+    for key, cfg in STRATEGIES.items():
+        allt = s["totals"][key]
+        today = _stats([t for t in s["closed"] if t["strategy"] == key and (t["closed_ts"] or 0) >= since_ts])
+        rate = f"{allt['wins'] / allt['trades'] * 100:.0f}% in profit" if allt["trades"] else "no trades yet"
+        out.append(f"  {cfg['label']}: today {today['trades']} closed, net ${today['net']:+.2f} | "
+                   f"all time {allt['trades']} closed, {rate}, net ${allt['net']:+.2f} after ${allt['fees']:.2f} fees")
+    for t in s["open"]:
+        net = f"{t['net']:+.2f}" if t.get("net") is not None else "?"
+        out.append(f"  open: {t['symbol']} ({t['strategy']}) since {_local_hm(t['opened_ts'])}, net if closed now ${net}")
+    for b in s["by_symbol"]:
+        out.append(f"  {b['symbol']} ({b['strategy']}): {b['trades']} trades, {b['wins']} in profit, net ${b['net']:+.2f}")
+    sig = [f"{x['symbol']} fast {x.get('last_state') or '-'} / swing {x.get('swing_state') or '-'}" for x in s["symbols"]]
+    if sig:
+        out.append("  signals now: " + "; ".join(sig))
+    return out
+
+
+def _local_hm(ts: float) -> str:
+    try:
+        from zoneinfo import ZoneInfo
+        from . import config
+        return datetime.fromtimestamp(ts, ZoneInfo(config.TZ)).strftime("%d %b %H:%M")
+    except Exception:  # noqa: BLE001
+        return _now_iso(ts)

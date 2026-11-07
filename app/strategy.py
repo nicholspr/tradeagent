@@ -1,4 +1,5 @@
-"""Entry signals for the day trader page: a trend-pullback strategy with a fee filter.
+"""Entry signals for the day trader page: a trend-pullback strategy with a fee filter, in two speeds
+(FAST: 5-minute trend, 1-minute timing; SWING: 1-hour trend, 15-minute timing).
 
 Plain rules, no AI, so every suggestion can be checked by hand:
 
@@ -81,51 +82,68 @@ def default_hurdle(kind: str) -> float:
     return {"crypto": 2.02, "stock": 2.0, "etf": 0.0}.get(kind, 0.0)
 
 
+FAST = {"key": "fast", "name": NAME, "trend": "5-min", "timing": "1-min", "stop_atr": STOP_ATR,
+        "reward_r": REWARD_R, "near_atr": NEAR_ATR, "min_trend": 0, "min_timing": MIN_1M}
+SWING = {"key": "swing", "name": "Swing pullback (1-hour trend, 15-min timing, fee filter)", "trend": "1-hour",
+         "timing": "15-min", "stop_atr": 1.5, "reward_r": 2.0, "near_atr": 0.25, "min_trend": 50, "min_timing": 30}
+
+
 def evaluate(bars_1m: list[dict], bid: float | None, ask: float | None, is_open: bool, hurdle_pct: float) -> dict:
-    """bars_1m: ascending 1-minute bars {t,o,h,l,c}. Returns the signal for the page."""
-    out = {"strategy": NAME, "state": "nodata", "headline": "", "entry": None, "stop": None, "target": None,
-           "reward_pct": None, "hurdle_pct": round(hurdle_pct, 2), "reasons": [], "ind": {}}
+    """Fast version: ascending 1-minute bars {t,o,h,l,c}; the 5-minute trend is built from them."""
+    if len(bars_1m) < MIN_1M:
+        return _judge([], bars_1m, bid, ask, is_open, hurdle_pct, FAST)
+    return _judge(resample(bars_1m, 300), bars_1m, bid, ask, is_open, hurdle_pct, FAST)
+
+
+def evaluate_swing(bars_15m: list[dict], bars_1h: list[dict], bid: float | None, ask: float | None,
+                   is_open: bool, hurdle_pct: float) -> dict:
+    """Slower version for assets with big fees (crypto): 1-hour trend, 15-minute timing.
+    Same rules; stops and targets come out several times wider, so moves can pay 2% fees."""
+    return _judge(bars_1h, bars_15m, bid, ask, is_open, hurdle_pct, SWING)
+
+
+def _judge(trend_bars: list[dict], timing_bars: list[dict], bid, ask, is_open: bool, hurdle_pct: float, P: dict) -> dict:
+    out = {"strategy": P["name"], "key": P["key"], "state": "nodata", "headline": "", "entry": None, "stop": None,
+           "target": None, "reward_pct": None, "hurdle_pct": round(hurdle_pct, 2), "reasons": [], "ind": {}}
     if not is_open or bid is None:
         out.update(state="closed", headline="Market closed: no live price, so no entry signal.")
         return out
-    if len(bars_1m) < MIN_1M:
+    if len(timing_bars) < P["min_timing"] or len(trend_bars) < max(P["min_trend"], 4):
         out["headline"] = "Not enough recent price history yet to judge an entry."
         return out
+    TR, TM = P["trend"], P["timing"]
     spread_pct = ((ask or bid) - bid) / bid * 100
-    closes1 = [b["c"] for b in bars_1m]
-    bars5 = resample(bars_1m, 300)
-    closes5 = [b["c"] for b in bars5]
-    e20_5, e50_5 = ema(closes5, 20), ema(closes5, 50)
-    e20_1 = ema(closes1, 20)[-1]
-    a1, a5 = atr(bars_1m[-30:], 14), atr(bars5, 14)
-    r_now, r_prev = rsi(closes1, 14), rsi(closes1[:-2], 14)
+    closes_tm = [b["c"] for b in timing_bars]
+    closes_tr = [b["c"] for b in trend_bars]
+    e20_tr, e50_tr = ema(closes_tr, 20), ema(closes_tr, 50)
+    e20_tm = ema(closes_tm, 20)[-1]
+    a_tm, a_tr = atr(timing_bars[-30:], 14), atr(trend_bars, 14)
+    r_now, r_prev = rsi(closes_tm, 14), rsi(closes_tm[:-2], 14)
     price = bid
-    slope = e20_5[-1] - e20_5[-4] if len(e20_5) >= 4 else 0.0
-    out["ind"] = {"ema20_5m": e20_5[-1], "ema50_5m": e50_5[-1], "ema20_1m": e20_1, "atr_1m": a1, "atr_5m": a5,
-                  "rsi_1m": r_now, "rsi_1m_prev": r_prev, "bars_5m": len(bars5), "spread_pct": spread_pct}
+    slope = e20_tr[-1] - e20_tr[-4] if len(e20_tr) >= 4 else 0.0
+    out["ind"] = {"ema20_trend": e20_tr[-1], "ema50_trend": e50_tr[-1], "ema20_timing": e20_tm, "atr_timing": a_tm,
+                  "atr_trend": a_tr, "rsi": r_now, "rsi_prev": r_prev, "trend_bars": len(trend_bars), "spread_pct": spread_pct}
     reasons = out["reasons"]
-    up = e20_5[-1] > e50_5[-1] and slope >= 0 and price > e50_5[-1]
+    up = e20_tr[-1] > e50_tr[-1] and slope >= 0 and price > e50_tr[-1]
     if not up:
-        why = []
-        if e20_5[-1] <= e50_5[-1]:
-            why.append(f"5-min EMA20 {e20_5[-1]:.6g} is below EMA50 {e50_5[-1]:.6g}")
+        if e20_tr[-1] <= e50_tr[-1]:
+            reasons.append(f"{TR} EMA20 {e20_tr[-1]:.6g} is below EMA50 {e50_tr[-1]:.6g}")
         if slope < 0:
-            why.append("5-min EMA20 is falling")
-        if price <= e50_5[-1]:
-            why.append(f"price is below the 5-min EMA50 ({e50_5[-1]:.6g})")
-        reasons.extend(why)
-        out.update(state="avoid", headline="Avoid for now: no uptrend. Wait for the 5-minute trend to turn up.")
+            reasons.append(f"{TR} EMA20 is falling")
+        if price <= e50_tr[-1]:
+            reasons.append(f"price is below the {TR} EMA50 ({e50_tr[-1]:.6g})")
+        out.update(state="avoid", headline=f"Avoid for now: no uptrend. Wait for the {TR} trend to turn up.")
         return out
-    reasons.append(f"Uptrend: 5-min EMA20 {e20_5[-1]:.6g} above EMA50 {e50_5[-1]:.6g} and rising")
-    entry = min(e20_1, price)
-    stop = entry - STOP_ATR * a5
-    if stop <= 0 or a5 <= 0:
+    reasons.append(f"Uptrend: {TR} EMA20 {e20_tr[-1]:.6g} above EMA50 {e50_tr[-1]:.6g} and rising")
+    entry = min(e20_tm, price)
+    stop = entry - P["stop_atr"] * a_tr
+    if stop <= 0 or not a_tr:
         out.update(state="nodata", headline="Price range too flat to set a stop.")
         return out
-    target = entry + REWARD_R * (entry - stop)
+    target = entry + P["reward_r"] * (entry - stop)
     reward_pct = (target - entry) / entry * 100
     out.update(entry=entry, stop=stop, target=target, reward_pct=round(reward_pct, 2))
-    near = price <= e20_1 + NEAR_ATR * (a1 or 0)
+    near = price <= e20_tm + P["near_atr"] * (a_tm or 0)
     turning = r_now is not None and r_prev is not None and r_now > r_prev and r_prev < 55
     if reward_pct < FEE_MULT * hurdle_pct:
         reasons.append(f"Target move {reward_pct:.2f}% is less than {FEE_MULT:g}x the {hurdle_pct:.2f}% round-trip cost")
@@ -135,19 +153,17 @@ def evaluate(bars_1m: list[dict], bid: float | None, ask: float | None, is_open:
     reasons.append(f"Target move {reward_pct:.2f}% covers the {hurdle_pct:.2f}% round-trip cost {reward_pct / hurdle_pct:.1f}x"
                    if hurdle_pct > 0 else f"Target move {reward_pct:.2f}%; no fees to cover")
     if near and turning:
-        reasons.append(f"Price is at the 1-min EMA20 pullback level and RSI turned up ({r_prev:.0f} to {r_now:.0f})")
-        out.update(state="enter", entry=price,
+        reasons.append(f"Price is at the {TM} EMA20 pullback level and RSI turned up ({r_prev:.0f} to {r_now:.0f})")
+        risk = P["stop_atr"] * a_tr
+        out.update(state="enter", entry=price, stop=price - risk, target=price + P["reward_r"] * risk,
+                   reward_pct=round(P["reward_r"] * risk / price * 100, 2),
                    headline="Entry now: uptrend pullback with momentum turning up.")
-        # re-base stop/target on the actual price
-        out["stop"] = price - STOP_ATR * a5
-        out["target"] = price + REWARD_R * STOP_ATR * a5
-        out["reward_pct"] = round((out["target"] - price) / price * 100, 2)
     elif near:
-        reasons.append(f"At the pullback level, waiting for 1-min RSI to turn up (now {r_now:.0f})" if r_now is not None
+        reasons.append(f"At the pullback level, waiting for {TM} RSI to turn up (now {r_now:.0f})" if r_now is not None
                        else "At the pullback level, waiting for momentum to turn up")
         out.update(state="wait", headline="Nearly there: price is at the buy level, waiting for momentum to turn up.")
     else:
         dist = (price - entry) / price * 100
-        reasons.append(f"Price is {dist:.2f}% above the 1-min EMA20 buy level; don't chase")
+        reasons.append(f"Price is {dist:.2f}% above the {TM} EMA20 buy level; don't chase")
         out.update(state="wait", headline="Wait for a pullback to the buy level before entering.")
     return out
