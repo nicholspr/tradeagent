@@ -194,7 +194,11 @@ Reports often say "wait for X" rather than "buy now", for example *"buy on a dai
    - the **Watch levels** card on the Overview page: symbol, condition, status, last close, expiry and the report it came from;
    - a **"Watch levels" email** when a condition is met or cancelled;
    - a section in the daily summary.
-5. **Backfill.** The **Read conditions from latest reports** button on the card fills in symbols that have no conditions, from their most recent report (up to 7 days old), without running a new analysis. This also ran once automatically when the feature was installed.
+5. **Symbols no longer on the watchlist.** Their conditions are still checked every morning, but scheduled runs only cover watchlist symbols, so a met condition can't move them anywhere. Instead:
+   - the "Watch levels" email says the symbol **will NOT be analysed automatically** and links to its check page;
+   - the Overview card marks it **Not on watchlist** with an **Analyse now** link, and the daily summary labels it the same way;
+   - **Analyse now** opens the usual "can a trade happen now?" check, then runs a **one-off analysis** (nothing runs from the link itself). Add the symbol back on Settings to include it in scheduled runs again.
+6. **Backfill.** The **Read conditions from latest reports** button on the card fills in symbols that have no conditions, from their most recent report (up to 7 days old), without running a new analysis. This also ran once automatically when the feature was installed.
 
 This gets around eToro not accepting waiting orders on some instruments (for example IUCS.L), because the app does the watching.
 
@@ -371,7 +375,7 @@ Removing an entry does not sell it; holdings stay until sold. London (`.L`) inst
 
 ```bash
 pip install -r requirements.txt
-python -m pytest -q tests          # 74 tests, all offline (fakes for eToro, Claude, email)
+python -m pytest -q tests          # 75 tests, all offline (fakes for eToro, Claude, email)
 DATA_DIR=./data uvicorn app.web:app --reload
 ```
 

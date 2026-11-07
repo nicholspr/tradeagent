@@ -645,8 +645,11 @@ def daily_summary() -> None:
 
     watching = levels.active()
     if watching:
-        lines += ["", "Watch levels:"] + [f"  {lv['ticker']}: {levels.describe(lv)} [{'MET' if lv['status'] == 'triggered' else 'watching'}]"
-                                          for lv in watching]
+        onlist = {i.symbol for i in policy.parse_watchlist(s["watchlist"])}
+        lines += ["", "Watch levels:"] + [
+            f"  {lv['ticker']}: {levels.describe(lv)} [{'MET' if lv['status'] == 'triggered' else 'watching'}]"
+            + ("" if lv["ticker"] in onlist else f" (not on watchlist, so not analysed automatically: {levels.analyse_link(lv['ticker'])})")
+            for lv in watching]
     try:
         from . import autotest
         lines += [""] + autotest.digest(datetime.fromisoformat(since).timestamp()) + [f"  {base}/daytrader"]

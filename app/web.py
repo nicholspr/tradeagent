@@ -568,8 +568,12 @@ def levels_card() -> str:
         return button + ("<p class=muted>None yet. When an analysis says to wait for a price (a breakout above a level, or a "
                 "pull-back into a zone) the condition appears here and is checked every morning.</p>")
     body = ""
+    onlist = {i.symbol for i in policy.parse_watchlist(store.get_settings()["watchlist"])}
     for lv in rows:
         status = ("<span class='pill okp'>Met</span>" if lv["status"] == "triggered" else "<span class=pill>Watching</span>")
+        if lv["ticker"] not in onlist:
+            status += (f"<br><span class='pill warn'>Not on watchlist</span><br><a href='{B}/preflight?symbol={quote(lv['ticker'])}'>"
+                       f"Analyse now</a>")
         last = f"{lv['last_close']:,.6g}" if lv.get("last_close") else "not checked yet"
         info = f"<br><span class=muted>{esc(lv['trigger_info'] or '')}</span>" if lv["status"] == "triggered" else ""
         body += (f"<tr><td><b>{esc(lv['ticker'])}</b></td><td>{esc(levels.describe(lv))}{info}</td><td>{status}</td>"
@@ -578,7 +582,9 @@ def levels_card() -> str:
     return table(body, "<tr><th>Symbol</th><th>Buy condition</th><th>Status</th><th>Last close</th><th>Expires</th>"
                        "<th>From run</th></tr>") + (
         "<p class=muted>A met condition moves the share to the front of the next scheduled analysis. "
-        "The new analysis decides whether to trade; nothing is bought from a condition alone.</p>") + button
+        "The new analysis decides whether to trade; nothing is bought from a condition alone. "
+        "Symbols <b>not on the watchlist</b> are still checked and emailed when met, but aren't analysed automatically: "
+        "use <b>Analyse now</b>, or add them back on Settings.</p>") + button
 
 
 @app.post("/levels/backfill")
@@ -1586,14 +1592,14 @@ def cancel_queued(pid: int):
 
 @app.get("/preflight", response_class=HTMLResponse)
 def preflight_page(symbol: str):
-    items = {i.symbol: i for i in policy.parse_watchlist(store.get_settings()["watchlist"])}
-    item = items.get(symbol.upper())
-    if not item:
-        raise HTTPException(404, "not in watchlist")
+    item, listed = _analysable(symbol)
+    off = ("" if listed else f"<p class=muted><b>{esc(item.symbol)} is not on your watchlist</b>; it's here because one of its "
+           f"watch levels is still active. This runs a one-off analysis; <a href='{B}/settings'>add it to the watchlist</a> "
+           f"to include it in scheduled runs.</p>")
     try:
         r = engine.preflight(item)
     except Exception as e:  # noqa: BLE001
-        return page("Check", f"<h1>{esc(item.symbol)}</h1><div class=card><p class=muted>Couldn't check the limits: {esc(str(e))}</p>"
+        return page("Check", f"<h1>{esc(item.symbol)}</h1>{off}<div class=card><p class=muted>Couldn't check the limits: {esc(str(e))}</p>"
                     f"{run_form(item.symbol, 'Analyse anyway')}</div>", active="Overview")
     rows = ""
     for side in r["sides"]:
@@ -1614,7 +1620,7 @@ def preflight_page(symbol: str):
         notes += "<p class=muted>The market is closed now, so an approved trade would queue until it opens.</p>"
     if not any(s["ok"] for s in r["sides"]):
         notes += "<p><b>As things stand, no trade for this share could happen</b>, whatever the agents say. Change the limits above first, or analyse for the research only.</p>"
-    return page("Check", f"<h1>{esc(item.symbol)} <span class=muted>can a trade happen now?</span></h1>"
+    return page("Check", f"<h1>{esc(item.symbol)} <span class=muted>can a trade happen now?</span></h1>{off}"
                 f"<div class=card><table>{rows}</table>{notes}</div>"
                 f"<div class=card style='margin-top:16px'>{run_form(item.symbol, 'Run analysis now')}"
                 f"<p class=muted>Costs roughly $0.50–$3 and takes several minutes. "
@@ -1625,12 +1631,26 @@ def run_form(symbol: str, label: str) -> str:
     return f"<form method=post action='{B}/run'><input type=hidden name=symbol value='{esc(symbol)}'><button>{esc(label)}</button></form>"
 
 
+def _analysable(symbol: str):
+    """(WatchItem, on_watchlist) for a manual analysis: a watchlist symbol, or one that is off the watchlist
+    but still has an active watch level (built the same way the watchlist editor builds an entry)."""
+    from . import levels
+    sym = symbol.strip().upper()
+    items = {i.symbol: i for i in policy.parse_watchlist(store.get_settings()["watchlist"])}
+    if sym in items:
+        return items[sym], True
+    if not levels.active(sym):
+        raise HTTPException(404, "not in watchlist")
+    try:
+        inst = engine.client().find_instrument(sym)
+    except Exception as e:  # noqa: BLE001
+        raise HTTPException(502, f"{sym} could not be found on eToro: {str(e)[:120]}")
+    return policy.parse_watchlist(_entry_for(sym, "", inst))[0], False
+
+
 @app.post("/run")
 def run_now(symbol: str = Form(...)):
-    items = {i.symbol: i for i in policy.parse_watchlist(store.get_settings()["watchlist"])}
-    item = items.get(symbol.upper())
-    if not item:
-        raise HTTPException(404, "not in watchlist")
+    item, _ = _analysable(symbol)
     threading.Thread(target=engine.analyse, args=(item,), kwargs={"manual": True}, daemon=True).start()
     store.log("info", f"manual analysis of {item.symbol} started")
     return back()

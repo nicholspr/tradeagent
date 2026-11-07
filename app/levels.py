@@ -228,12 +228,26 @@ def check(ec, now: datetime | None = None) -> dict:
     return changed
 
 
+def on_watchlist(ticker: str) -> bool:
+    return ticker.upper() in {i.symbol for i in policy.parse_watchlist(store.get_settings()["watchlist"])}
+
+
+def analyse_link(ticker: str) -> str:
+    """Page that checks the limits and offers to analyse the symbol (nothing runs from the link itself)."""
+    from urllib.parse import quote
+    return f"{config.PUBLIC_BASE_URL}/preflight?symbol={quote(ticker)}"
+
+
 def overnight(ec) -> dict:
     """Scheduled morning check: update conditions, log and email anything that changed."""
     changed = check(ec)
     lines = []
     for ticker, lv, info in changed["triggered"]:
-        lines.append(f"MET  {ticker}: {describe(lv)}: {info}. It will be analysed first in its next run.")
+        if on_watchlist(ticker):
+            lines.append(f"MET  {ticker}: {describe(lv)}: {info}. It will be analysed first in its next run.")
+        else:
+            lines.append(f"MET  {ticker}: {describe(lv)}: {info}. {ticker} is not on your watchlist, so it will NOT be "
+                         f"analysed automatically. Analyse it now: {analyse_link(ticker)}")
     for ticker, lv, info in changed["cancelled"]:
         lines.append(f"CANCELLED  {ticker}: {describe(lv)}: {info}.")
     for ticker, lv in changed["expired"]:

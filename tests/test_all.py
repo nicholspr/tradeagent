@@ -1957,3 +1957,47 @@ def test_swing_strategy_targets_are_wide_enough_for_crypto_fees():
     down = mk(lambda i: 100 * (1 - 0.003 * i), 100, 3600)
     assert st.evaluate_swing(q, down, q[-1]["c"], q[-1]["c"], True, 2.03)["state"] == "avoid"
     assert st.evaluate_swing(q[:10], h1, 1, 1, True, 2)["state"] == "nodata"
+
+
+def test_watch_levels_off_the_watchlist_say_so_and_can_be_analysed(eng, monkeypatch):
+    engine, store, sent, fs, rating = eng
+    import importlib as _il, threading as _th, time as _t
+    from fastapi.testclient import TestClient
+    from app import levels, policy, notify, web
+    store.set_setting("watchlist", "META,GOOG")
+    monkeypatch.setattr(levels, "call_model", lambda p: '{"conditions": [{"type": "zone", "low": 14.5, "high": 14.9}], "invalid_below": 14}')
+    levels.record("IUHC.L", 1, "t", 15.0)                                      # not on the watchlist
+    monkeypatch.setattr(levels, "call_model", lambda p: '{"conditions": [{"type": "close_above", "level": 605}]}')
+    levels.record("META", 2, "t", 600)                                         # on the watchlist
+    off, on = levels.active("IUHC.L")[0], levels.active("META")[0]
+    mails = []
+    monkeypatch.setattr(notify, "email", lambda subj, body, **k: mails.append(body))
+    monkeypatch.setattr(levels, "check", lambda ec: {"triggered": [("IUHC.L", off, "traded down to 14.88"), ("META", on, "closed 610")],
+                                                    "cancelled": [], "expired": []})
+    levels.overnight(None)
+    body = mails[-1]
+    assert "META" in body and "It will be analysed first in its next run" in body
+    assert "IUHC.L is not on your watchlist, so it will NOT be analysed automatically" in body and "/preflight?symbol=IUHC.L" in body
+
+    _il.reload(web)
+    monkeypatch.setattr(web.sched, "start", lambda: None)
+
+    class EC:
+        def find_instrument(self, s):
+            return {"instrumentId": 1036574, "name": "iShares Health Care", "assetClass": "ETF"}
+    monkeypatch.setattr(engine, "client", lambda: EC())
+    monkeypatch.setattr(engine, "preflight", lambda item: (_ for _ in ()).throw(RuntimeError("no limits in test")))
+    ran = []
+    monkeypatch.setattr(engine, "analyse", lambda item, manual=False: ran.append((item.symbol, manual)))
+    with TestClient(web.app) as c:
+        page = c.get("/preflight?symbol=IUHC.L")
+        assert page.status_code == 200 and "is not on your watchlist" in page.text and "Analyse anyway" in page.text
+        assert c.post("/run", data={"symbol": "IUHC.L"}, follow_redirects=False).status_code in (200, 303)
+        for _ in range(50):
+            if ran:
+                break
+            _t.sleep(0.02)
+        assert ran == [("IUHC.L", True)]
+        assert c.post("/run", data={"symbol": "TSLA"}, follow_redirects=False).status_code == 404   # no level, not listed
+        ov = c.get("/").text
+        assert "Not on watchlist" in ov and "preflight?symbol=IUHC.L" in ov
