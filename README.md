@@ -240,13 +240,12 @@ The top menu has **Overview, Opportunities, Scorecard, Logs and Settings**. The 
 - **Limits:** at most **3 scans a day**. The page never places or queues a trade.
 
 ### Day trader (test)
-A first step towards intraday tools. Search for any eToro instrument by symbol or name to see its live price, then open paper trades in it. Each open paper trade has its own **1-hour candle chart** (time across, price up), refreshed every **30 seconds**.
+A first step towards intraday tools. Search for any eToro instrument by symbol or name to see its live price, then open paper trades in it. Charts are in the auto-test grid further down the page.
 - eToro's smallest candle is 1 minute, so the app builds **30-second candles** itself by sampling the live bid every 5 seconds while the page is open. The chart starts with the last hour of 1-minute candles (drawn paler), and the live 30-second candles replace them as they form.
 - The card shows the bid, ask and spread, the change over the hour, and **Live** or **Market closed** (with the time of the last price).
 - Sampling stops by itself about two minutes after you close the page, so it uses no eToro quota when nobody is watching. The last symbol is remembered, and `/daytrader?iid=<instrument id>` opens one directly.
 - **Paper trades (theoretical $100 each).** **Open $100 paper buy of <symbol>** records a pretend buy at the current ask. You can have **as many open as you like**, in any mix of symbols. The page has the symbol card (live price, change over the last hour, bid/ask, Open button), then **Open paper trades** (two-thirds of the width) and **Closed paper trades** (one-third).
-  - **Each open position has its own chart** with three dashed lines: **paper buy** (amber), **target** (violet) and **current price** (blue). The price scale always stretches to keep the buy and target lines in view.
-  - **Target = break-even after fees**: the bid price at which closing would leave exactly $0 after every cost (crypto 1% each way, share commission, UK stamp duty, currency conversion). Each card shows the target and how far the price still has to move to reach it ("To target", or "reached").
+  - **Target = break-even after fees**: the bid price at which closing would leave exactly $0 after every cost (crypto 1% each way, share commission, UK stamp duty, currency conversion). Each open position (no chart, to keep the page light) shows the target and how far the price still has to move to reach it ("To target", or "reached").
   - Each card also shows the buy and current prices, costs and net if closed now, and updates every 5 seconds (charts every 30). Tap a position's symbol to make it the selected symbol. **Close** sells one at the bid; **Close all** closes everything. Totals for all open positions sit under the list.
   - **Closed paper trades** shows the full cost breakdown of the trade you just closed, then the last 20 closed trades with time, holding period, costs and net, plus how many were in profit and the running total.
   - Costs follow eToro's published fees: crypto 1% to buy and 1% to sell; shares a commission per side ($1 or $2 by country and exchange, set under *Cost assumptions*, default $1) plus 0.5% UK stamp duty on buys of `.L` shares; ETFs no commission; an optional currency conversion % per side. CFD overnight fees are not included. Everything is kept in your browser, so it survives a refresh but isn't shared between devices.
@@ -268,6 +267,8 @@ A first step towards intraday tools. Search for any eToro instrument by symbol o
   - **Swing:** the same rules on a 1-hour trend with 15-minute timing, so stops and targets come out several times wider (typically 3–6% to target), enough to clear crypto's 2% round trip; trades close at stop, target or after **48 hours**.
 
   Every minute the server checks each symbol: on **Entry now** it records a theoretical $100 buy at the live ask, one open trade per symbol per strategy, and closes it at the signal's stop or target, checking every 1-minute candle since the entry (if one candle touched both, the stop is assumed first, the cautious choice), or at the bid at the time limit. Costs follow the same eToro rules as the paper trades (share commission at the $1 default).
+
+  **Charts:** above the test list, a grid (four across on a wide screen, two on a tablet, one on a phone) has a chart for each tested symbol. While an auto-test trade is running in it, the chart runs from **15 minutes before the entry** to now and marks the entry time (**In**), the entry price, the **target**, the **stop** and the current price; when the trade closes it also marks the exit (**Out**) and its price, and stays on that view until **15 minutes after the exit**. Otherwise it shows the **last 12 hours** (5-minute candles). Several strategies in one symbol are drawn together, labelled by strategy. The charts refresh every minute.
 
   The card shows, for each strategy, closed trades, % in profit after fees, targets/stops/time-outs, gross price moves, fees paid and total net; then each tested symbol with its fast and swing signals now, open auto-test trades with their live net, results by symbol and strategy, and every closed trade. **Editing the test list:** search for any eToro instrument in the card's **Test list** box to add it (its symbol, name and cost type are looked up on eToro, so the right fees apply), or press **Add <symbol>** for the one selected at the top. Each symbol has **Fast**, **Fast v2** and **Swing** switches: switching one off stops that strategy opening new trades in that symbol (a trade already open still runs to its stop, target or time limit), e.g. swing only for 2%-fee crypto. **Remove** takes a symbol off the list and closes its open trades at the last price. It starts with BTC, SOL, SUI, AVAX, TSLA.24-7 and NVDA.24-7. The **daily summary email** includes an auto-test section: today's and all-time results per strategy, open trades, results by symbol and each symbol's signals.
 - Charts show the **last hour**: 1-minute candles from eToro, replaced by 30-second candles built from the live price while the page is open.
@@ -383,7 +384,7 @@ Removing an entry does not sell it; holdings stay until sold. London (`.L`) inst
 
 ```bash
 pip install -r requirements.txt
-python -m pytest -q tests          # 77 tests, all offline (fakes for eToro, Claude, email)
+python -m pytest -q tests          # 78 tests, all offline (fakes for eToro, Claude, email)
 DATA_DIR=./data uvicorn app.web:app --reload
 ```
 

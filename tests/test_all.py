@@ -2066,3 +2066,44 @@ def test_fast2_cooldown_and_daily_pause(eng):
     stop_at(midday - 2 * 3600)
     assert autotest.blocked(7, "fast2", midday).startswith("Paused for the rest of today")   # 2 stops today
     assert autotest.blocked(7, "fast2", midday + 24 * 3600) is None                            # a new day
+
+
+def test_autotest_chart_windows(eng, monkeypatch):
+    import time as _t
+    engine, store, sent, fs, rating = eng
+    from app import autotest, daytrader
+    autotest._ensure()
+    now = _t.time()
+    asked = []
+    iso = lambda t: datetime.fromtimestamp(t, timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
+
+    class C:
+        def candles(self, iid, interval, count):
+            asked.append((interval, count))
+            step = {"OneMinute": 60, "FiveMinutes": 300, "FifteenMinutes": 900, "OneHour": 3600}[interval]
+            start = int(now // step * step) - (count - 1) * step
+            return [{"date": iso(start + step * i), "open": 10, "high": 10.1, "low": 9.9, "close": 10} for i in range(count)]
+    monkeypatch.setattr(engine, "client", lambda: C())
+    daytrader._cache.clear()
+    with store._lock, store.connect() as c:
+        c.execute("INSERT OR IGNORE INTO autotest_meta(key, value) VALUES ('seeded','x')")
+    autotest.add_symbol(15200, "TSLA.24-7", "cfd")
+    d = autotest.chart(15200, now)                                   # nothing running: last 12 hours
+    assert d["mode"] == "idle" and abs((d["t1"] - d["t0"]) - 12 * 3600) < 1 and d["interval"] == "FiveMinutes"
+    assert all(c["t"] + c["d"] > d["t0"] for c in d["candles"]) and len(d["candles"]) >= 140
+    with store._lock, store.connect() as c:                         # a fast2 trade opened 40 minutes ago
+        c.execute("INSERT INTO autotrades(iid, symbol, kind, strategy, opened_ts, amt, entry, stop, target, status, last_bid) "
+                  "VALUES (15200,'TSLA.24-7','cfd','fast2',?,100,10,9.9,10.2,'open',10.05)", (now - 40 * 60,))
+    daytrader._cache.clear()
+    d = autotest.chart(15200, now)
+    assert d["mode"] == "trade" and abs(d["t0"] - (now - 55 * 60)) < 1 and d["interval"] == "OneMinute"   # entry - 15 min
+    t = d["trades"][0]
+    assert t["strategy"] == "fast2" and t["entry"] == 10 and t["target"] == 10.2 and t["stop"] == 9.9 and t["net"] > 0
+    with store._lock, store.connect() as c:                         # it closed 5 minutes ago: still shown with its exit
+        c.execute("UPDATE autotrades SET status='closed', closed_ts=?, exit=10.2, reason='target' WHERE iid=15200", (now - 300,))
+    daytrader._cache.clear()
+    d = autotest.chart(15200, now)
+    assert d["mode"] == "trade" and d["trades"][0]["exit"] == 10.2
+    daytrader._cache.clear()
+    assert autotest.chart(15200, now + 11 * 60)["mode"] == "idle"   # 16 minutes after the exit: back to 12 hours
+    daytrader._cache.clear()

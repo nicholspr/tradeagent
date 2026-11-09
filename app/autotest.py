@@ -353,3 +353,42 @@ def _local_hm(ts: float) -> str:
         return datetime.fromtimestamp(ts, ZoneInfo(config.TZ)).strftime("%d %b %H:%M")
     except Exception:  # noqa: BLE001
         return _now_iso(ts)
+
+
+# --- charts for the auto-test grid on the day trader page -----------------------------------
+PAD = 15 * 60                       # show 15 minutes either side of a trade
+IDLE_WINDOW = 12 * 3600             # no trade: the last 12 hours
+INTERVALS = [("OneMinute", 60, 5 * 3600), ("FiveMinutes", 300, 36 * 3600),
+             ("FifteenMinutes", 900, 7 * 86400), ("OneHour", 3600, 10 ** 9)]
+
+
+def chart(iid: int, now: float | None = None) -> dict:
+    """Candles and trade markers for one tested symbol.
+    With a trade open, or one that closed under 15 minutes ago: from 15 minutes before the earliest
+    such entry up to now (so a closed trade shows until 15 minutes after its exit). Otherwise: the
+    last 12 hours. The candle interval is the finest that covers the window in at most ~300 candles."""
+    _ensure()
+    now = now or time.time()
+    with store._lock, store.connect() as c:
+        rows = [dict(r) for r in c.execute(
+            "SELECT id, COALESCE(strategy,'fast') AS strategy, status, opened_ts, entry, stop, target, closed_ts, exit, "
+            "reason, last_bid, kind, symbol, amt FROM autotrades WHERE iid=? AND (status='open' OR closed_ts >= ?) "
+            "ORDER BY opened_ts", (int(iid), now - PAD))]
+        srow = c.execute("SELECT symbol, kind, last_bid FROM autotest_symbols WHERE iid=?", (int(iid),)).fetchone()
+    for t in rows:
+        bid = t["exit"] if t["status"] == "closed" else t["last_bid"]
+        if bid:
+            t["net"] = costs(t["kind"], t["symbol"], t["amt"], t["entry"], bid)["net"]
+    if rows:
+        mode, t0 = "trade", min(t["opened_ts"] for t in rows) - PAD
+    else:
+        mode, t0 = "idle", now - IDLE_WINDOW
+    name, step = next((n, s) for n, s, span in INTERVALS if now - t0 <= span)
+    count = min(1000, int((now - t0) // step) + 2)
+    ec = engine.client()
+    raw = daytrader._cached(("agrid", int(iid), name, count // 5), 55, lambda: ec.candles(int(iid), name, count))
+    candles = [{"t": b["t"], "d": step, "o": b["o"], "h": b["h"], "l": b["l"], "c": b["c"]}
+               for b in _to_bars(raw) if b["t"] + step > t0]
+    return {"iid": int(iid), "symbol": srow["symbol"] if srow else f"#{iid}", "mode": mode, "t0": t0, "t1": now,
+            "interval": name, "step": step, "candles": candles, "trades": rows,
+            "last_bid": srow["last_bid"] if srow else None}
