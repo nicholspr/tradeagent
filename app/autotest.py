@@ -1,8 +1,12 @@
 """Strategy auto-test: theoretical $100 paper trades opened and closed by the server, 24/7.
 
-Two versions of the entry strategy (app/strategy.py) run side by side on every symbol:
-- fast:  5-minute trend, 1-minute timing; trades close after at most 4 hours;
+Four versions of the entry strategy (app/strategy.py) run side by side on every symbol:
+- fast:  5-minute trend, 1-minute timing; trades close after at most 4 hours (the unchanged baseline);
+- fast2: fast plus filters (quiet markets, 1-hour trend, spread-aware stops, home-market hours, spread cap);
+- fast3: fast2 with a 1.5:1 target and the stop moved to break-even once the trade is 1R in profit;
 - swing: 1-hour trend, 15-minute timing, wider stops and targets; at most 48 hours.
+Every trade records its initial risk (the net loss if stopped), so results are also shown in R
+(net / initial risk), and the best price reached while open (MFE), to show where targets should sit.
 
 Every minute, for each symbol on the list and each strategy:
 - with no open trade for that symbol and strategy, an "Entry now" signal records a $100 paper buy
@@ -26,6 +30,8 @@ COMMISSION = 1.0          # $ per side for shares, as the page's default
 STRATEGIES = {"fast": {"label": "Fast (5-min trend)", "short": "Fast", "max_hours": 4.0},
               "fast2": {"label": "Fast v2 (filtered)", "short": "Fast v2", "max_hours": 4.0,
                         "cooldown_min": 30, "max_stops_day": 2},
+              "fast3": {"label": "Fast v3 (1.5:1, break-even)", "short": "Fast v3", "max_hours": 4.0,
+                        "cooldown_min": 30, "max_stops_day": 2, "be_at_r": 1.0},
               "swing": {"label": "Swing (1-hour trend)", "short": "Swing", "max_hours": 48.0}}
 MAX_HOURS = STRATEGIES["fast"]["max_hours"]
 SEED = [(100000, "BTC", "crypto"), (100063, "SOL", "crypto"), (100340, "SUI", "crypto"),
@@ -54,10 +60,13 @@ def _ensure() -> None:
         cols = [r["name"] for r in c.execute("PRAGMA table_info(autotrades)")]
         if "strategy" not in cols:
             c.execute("ALTER TABLE autotrades ADD COLUMN strategy TEXT DEFAULT 'fast'")
+        if "mfe" not in cols:
+            c.execute("ALTER TABLE autotrades ADD COLUMN mfe REAL")       # highest price seen while open
         scols = [r["name"] for r in c.execute("PRAGMA table_info(autotest_symbols)")]
         for col, kind in (("swing_state", "TEXT"), ("swing_headline", "TEXT"), ("name", "TEXT"),
                           ("fast_on", "INTEGER DEFAULT 1"), ("swing_on", "INTEGER DEFAULT 1"),
-                          ("fast2_state", "TEXT"), ("fast2_headline", "TEXT"), ("fast2_on", "INTEGER DEFAULT 1")):
+                          ("fast2_state", "TEXT"), ("fast2_headline", "TEXT"), ("fast2_on", "INTEGER DEFAULT 1"),
+                          ("fast3_state", "TEXT"), ("fast3_headline", "TEXT"), ("fast3_on", "INTEGER DEFAULT 1")):
             if col not in scols:
                 c.execute(f"ALTER TABLE autotest_symbols ADD COLUMN {col} {kind}")
         if not c.execute("SELECT 1 FROM autotest_meta WHERE key='seeded'").fetchone():
@@ -112,8 +121,8 @@ def add_symbol(iid: int, symbol: str | None = None, kind: str | None = None, nam
             raise ValueError(f"eToro has no instrument {iid}")
         symbol, kind, name = symbol or sym, kind or kd, name or nm
     with store._lock, store.connect() as c:
-        c.execute("INSERT OR IGNORE INTO autotest_symbols(iid, symbol, kind, name, added, fast_on, swing_on, fast2_on) "
-                  "VALUES (?,?,?,?,?,1,1,1)", (int(iid), symbol, kind, name, _now_iso()))
+        c.execute("INSERT OR IGNORE INTO autotest_symbols(iid, symbol, kind, name, added, fast_on, swing_on, fast2_on, fast3_on) "
+                  "VALUES (?,?,?,?,?,1,1,1,1)", (int(iid), symbol, kind, name, _now_iso()))
     store.log("info", f"auto-test: added {symbol}")
     return {"iid": int(iid), "symbol": symbol, "kind": kind, "name": name}
 
@@ -159,24 +168,54 @@ def _close(t: dict, exit_bid: float, reason: str, ts: float) -> None:
 
 
 def check_exit(t: dict, bars: list[dict], bid: float | None, is_open: bool, now: float,
-               max_hours: float = MAX_HOURS) -> tuple[str, float] | None:
-    """(reason, exit price) if the trade should close now, else None."""
+               max_hours: float = MAX_HOURS, be_at_r: float | None = None) -> tuple[str, float] | None:
+    """(reason, exit price) if the trade should close now, else None.
+    With be_at_r, the stop moves up to the entry price once a candle's high has reached entry + be_at_r x the
+    initial risk; it takes effect from the next candle (inside one candle the order of high and low is unknown)."""
     first = (int(t["opened_ts"] // 60) + 1) * 60          # candles that started after the entry minute
+    stop, armed = t["stop"], False
+    be_level = t["entry"] + be_at_r * (t["entry"] - t["stop"]) if be_at_r else None
     for b in bars:
         if b["t"] < first:
             continue
-        if b["l"] <= t["stop"]:
-            return "stop", t["stop"]
+        if b["l"] <= stop:
+            return ("break-even", stop) if armed else ("stop", stop)
         if b["h"] >= t["target"]:
             return "target", t["target"]
+        if be_level is not None and not armed and b["h"] >= be_level:
+            armed, stop = True, max(stop, t["entry"])
     if bid is not None and is_open:
-        if bid <= t["stop"]:
-            return "stop", bid
+        if bid <= stop:
+            return ("break-even", bid) if armed else ("stop", bid)
         if bid >= t["target"]:
             return "target", bid
         if now - t["opened_ts"] >= max_hours * 3600:
             return f"time limit ({max_hours:g}h)", bid
     return None
+
+
+def best_price(t: dict, bars: list[dict], bid: float | None) -> float | None:
+    """Highest price reached since the entry (candle highs after the entry minute, and the live bid),
+    never below what was already recorded."""
+    first = (int(t["opened_ts"] // 60) + 1) * 60
+    vals = [b["h"] for b in bars if b["t"] >= first] + ([bid] if bid is not None else []) + ([t["mfe"]] if t.get("mfe") else [])
+    return max(vals) if vals else None
+
+
+def risk_usd(t: dict) -> float:
+    """Initial risk: the net loss (fees included) if the trade had closed at its original stop."""
+    return -costs(t["kind"], t["symbol"], t["amt"], t["entry"], t["stop"])["net"]
+
+
+def r_stats(t: dict) -> dict:
+    """R-multiple (net / initial risk) and best move in R, for a trade dict with net and mfe."""
+    risk, per = risk_usd(t), t["entry"] - t["stop"]
+    out = {"risk": risk, "r": None, "mfe_r": None}
+    if risk > 0 and t.get("net") is not None:
+        out["r"] = t["net"] / risk
+    if per > 0 and t.get("mfe"):
+        out["mfe_r"] = (t["mfe"] - t["entry"]) / per
+    return out
 
 
 def _to_bars(candles: list[dict]) -> list[dict]:
@@ -256,8 +295,10 @@ def _tick_one(s: dict, r: dict | None, now: float) -> None:
         sigs["swing"] = strategy.evaluate_swing(_bars(iid, "FifteenMinutes"), bars_h, bid, ask, is_open, hurdle)
         sigs["fast2"] = strategy.evaluate_fast2(bars1, bars_h, bid, ask, is_open, hurdle, kind, sym,
                                                 datetime.fromtimestamp(now, timezone.utc))
+        sigs["fast3"] = strategy.evaluate_fast3(bars1, bars_h, bid, ask, is_open, hurdle, kind, sym,
+                                                datetime.fromtimestamp(now, timezone.utc))
     except Exception as e:  # noqa: BLE001
-        for k in ("swing", "fast2"):
+        for k in ("swing", "fast2", "fast3"):
             sigs.setdefault(k, {"state": "error", "headline": str(e)[:200]})
     for key in STRATEGIES:                                  # show cooling-off / paused on the page
         why = blocked(iid, key, now)
@@ -265,14 +306,20 @@ def _tick_one(s: dict, r: dict | None, now: float) -> None:
             sigs[key] = {**sigs[key], "state": "paused", "headline": why, "blocked": True}
     with store._lock, store.connect() as c:
         c.execute("UPDATE autotest_symbols SET last_state=?, last_headline=?, swing_state=?, swing_headline=?, "
-                  "fast2_state=?, fast2_headline=?, last_checked=?, last_bid=? WHERE iid=?",
+                  "fast2_state=?, fast2_headline=?, fast3_state=?, fast3_headline=?, last_checked=?, last_bid=? WHERE iid=?",
                   (sigs["fast"]["state"], sigs["fast"]["headline"], sigs["swing"]["state"], sigs["swing"]["headline"],
-                   sigs["fast2"]["state"], sigs["fast2"]["headline"], _now_iso(now), bid, iid))
+                   sigs["fast2"]["state"], sigs["fast2"]["headline"], sigs["fast3"]["state"], sigs["fast3"]["headline"],
+                   _now_iso(now), bid, iid))
     for key, cfg in STRATEGIES.items():
         t = _open_trade(iid, key)
         ex = None
         if t:
-            ex = check_exit(t, bars1, bid, is_open, now, cfg["max_hours"])
+            ex = check_exit(t, bars1, bid, is_open, now, cfg["max_hours"], cfg.get("be_at_r"))
+            mfe = best_price(t, bars1, bid if is_open else None)
+            if mfe is not None:
+                t["mfe"] = mfe
+                with store._lock, store.connect() as c:
+                    c.execute("UPDATE autotrades SET mfe=? WHERE id=?", (mfe, t["id"]))
             if ex:
                 _close(t, ex[1], ex[0], now)
             elif bid is not None:
@@ -295,9 +342,11 @@ def _tick_one(s: dict, r: dict | None, now: float) -> None:
 
 
 def _stats(rows: list[dict]) -> dict:
+    rs = [t["r"] for t in rows if t.get("r") is not None]
     return {"trades": len(rows), "wins": sum(t["net"] > 0 for t in rows), "net": sum(t["net"] for t in rows),
             "fees": sum(t["fees"] for t in rows), "gross": sum(t["gross"] for t in rows),
-            "targets": sum(t["reason"] == "target" for t in rows), "stops": sum(t["reason"] == "stop" for t in rows)}
+            "targets": sum(t["reason"] == "target" for t in rows), "stops": sum(t["reason"] == "stop" for t in rows),
+            "total_r": sum(rs), "avg_r": sum(rs) / len(rs) if rs else None}
 
 
 def summary(limit: int = 50) -> dict:
@@ -306,11 +355,15 @@ def summary(limit: int = 50) -> dict:
     with store._lock, store.connect() as c:
         open_ = [dict(r) for r in c.execute("SELECT * FROM autotrades WHERE status='open' ORDER BY opened_ts DESC")]
         closed = [dict(r) for r in c.execute("SELECT * FROM autotrades WHERE status='closed' ORDER BY closed_ts DESC LIMIT ?", (limit,))]
-        allc = [dict(r) for r in c.execute("SELECT symbol, COALESCE(strategy,'fast') AS strategy, net, fees, gross, reason, "
-                                           "closed_ts FROM autotrades WHERE status='closed'")]
-    for t in open_ + closed:
+        allc = [dict(r) for r in c.execute("SELECT symbol, kind, amt, entry, stop, mfe, COALESCE(strategy,'fast') AS strategy, "
+                                           "net, fees, gross, reason, closed_ts FROM autotrades WHERE status='closed'")]
+    for t in open_ + closed + allc:
         t["strategy"] = t.get("strategy") or "fast"
         t.pop("reasons", None)
+    for t in closed + allc:
+        t.update(r_stats(t))
+    for t in open_:
+        t.update({k: v for k, v in r_stats(t).items() if k != "r"})
     for t in open_:
         if t["last_bid"]:
             t.update({k: v for k, v in costs(t["kind"], t["symbol"], t["amt"], t["entry"], t["last_bid"]).items() if k != "lines"})
@@ -327,19 +380,21 @@ def summary(limit: int = 50) -> dict:
 def digest(since_ts: float) -> list[str]:
     """Plain-text lines for the daily summary email."""
     s = summary(500)
-    out = ["Strategy auto-test (theoretical $100 trades, both strategies):"]
+    out = ["Strategy auto-test (theoretical $100 trades, every strategy):"]
     for key, cfg in STRATEGIES.items():
         allt = s["totals"][key]
         today = _stats([t for t in s["closed"] if t["strategy"] == key and (t["closed_ts"] or 0) >= since_ts])
         rate = f"{allt['wins'] / allt['trades'] * 100:.0f}% in profit" if allt["trades"] else "no trades yet"
+        rr = f", {allt['total_r']:+.1f}R (avg {allt['avg_r']:+.2f}R)" if allt["avg_r"] is not None else ""
         out.append(f"  {cfg['label']}: today {today['trades']} closed, net ${today['net']:+.2f} | "
-                   f"all time {allt['trades']} closed, {rate}, net ${allt['net']:+.2f} after ${allt['fees']:.2f} fees")
+                   f"all time {allt['trades']} closed, {rate}, net ${allt['net']:+.2f} after ${allt['fees']:.2f} fees{rr}")
     for t in s["open"]:
         net = f"{t['net']:+.2f}" if t.get("net") is not None else "?"
         out.append(f"  open: {t['symbol']} ({t['strategy']}) since {_local_hm(t['opened_ts'])}, net if closed now ${net}")
     for b in s["by_symbol"]:
         out.append(f"  {b['symbol']} ({b['strategy']}): {b['trades']} trades, {b['wins']} in profit, net ${b['net']:+.2f}")
-    sig = [f"{x['symbol']} fast {x.get('last_state') or '-'} / v2 {x.get('fast2_state') or '-'} / swing {x.get('swing_state') or '-'}"
+    sig = [f"{x['symbol']} fast {x.get('last_state') or '-'} / v2 {x.get('fast2_state') or '-'} / v3 {x.get('fast3_state') or '-'} "
+           f"/ swing {x.get('swing_state') or '-'}"
            for x in s["symbols"]]
     if sig:
         out.append("  signals now: " + "; ".join(sig))

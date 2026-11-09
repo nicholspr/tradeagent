@@ -1245,7 +1245,7 @@ function nice(x){const p=Math.pow(10,Math.floor(Math.log10(x))),f=x/p;return (f<
 // ---- entry signals (rules in app/strategy.py, judged on the server every 30 s)
 const SIG={enter:['Entry now','#22c55e','#052e16'],wait:['Wait','#f59e0b','#2a1d05'],avoid:['Avoid','#ef4444','#2a0a0a'],
   fees:['Fees too high','#9ca3af','#1f2430'],closed:['Market closed','#9ca3af','#1f2430'],nodata:['No signal yet','#9ca3af','#1f2430'],
-  quiet:['Too quiet','#9ca3af','#1f2430'],paused:['Paused','#a78bfa','#1e1638']};
+  quiet:['Too quiet','#9ca3af','#1f2430'],paused:['Paused','#a78bfa','#1e1638'],spread:['Spread too wide','#9ca3af','#1f2430']};
 const C_ENT='#22c55e';
 function hurdleQ(kind,symbol){if(!kind)return '';const p={amt:100,ask:1,kind,symbol:symbol||'',comm:cfg.comm,fx:cfg.fx};
   return '?hurdle='+((breakEven(p)-1)*100).toFixed(3);}
@@ -1400,7 +1400,8 @@ function autoPost(path,body){return fetch(B+'/daytrader/autotest/'+path,{method:
     if(e.key==='ArrowDown'||e.key==='ArrowUp'){e.preventDefault();hl=(hl+(e.key==='ArrowDown'?1:-1)+items.length)%items.length;ds.forEach((d,i)=>d.classList.toggle('hl',i===hl));}
     else if(e.key==='Enter'){e.preventDefault();add(items[Math.max(hl,0)]);}else if(e.key==='Escape')res.style.display='none';});
   document.addEventListener('click',e=>{if(!e.target.closest('#dt-ares')&&e.target!==q)res.style.display='none';});})();
-const REASON={stop:'Stop',target:'Target'};
+const REASON={stop:'Stop',target:'Target','break-even':'Break-even'};
+const rx=v=>v==null?'–':(v>=0?'+':'')+v.toFixed(2)+'R';
 function autoPaint(){const el=$('dt-auto');if(!el||!auto)return;const now=Date.now()/1000,S=auto.strategies||{fast:{label:'Fast'},swing:{label:'Swing'}};
   const tbl=(head,rows)=>'<div class=tbl><table><tr>'+head.map(h=>'<th>'+h+'</th>').join('')+'</tr>'+rows.join('')+'</table></div>';
   const lab=k=>(S[k]||{label:k}).label;
@@ -1412,7 +1413,8 @@ function autoPaint(){const el=$('dt-auto');if(!el||!auto)return;const now=Date.n
       +'<div><span>Target / stop / time</span><b>'+T.targets+' / '+T.stops+' / '+(T.trades-T.targets-T.stops)+'</b></div>'
       +'<div><span>Price moves</span><b class=\"'+cls(T.gross)+'\">'+sgn(T.gross)+'</b></div>'
       +'<div><span>Fees paid</span><b>'+money(T.fees)+'</b></div>'
-      +'<div><span>Total net</span><b class=\"'+cls(T.net)+'\">'+sgn(T.net)+'</b></div></div>';});
+      +'<div><span>Total net</span><b class=\"'+cls(T.net)+'\">'+sgn(T.net)+'</b></div>'
+      +'<div><span>Total R (average)</span><b class=\"'+cls(T.total_r||0)+'\">'+(T.avg_r==null?'–':rx(T.total_r)+' ('+rx(T.avg_r)+')')+'</b></div></div>';});
   el.innerHTML=h;h='';
   const inList=cur&&auto.symbols.some(x=>x.iid===cur.instrumentId);
   const sg=(st,hd)=>st?sigPill(st==='error'?'nodata':st)+'<span class=muted>'+(hd||'')+'</span>':'<span class=muted>waiting for the first check</span>';
@@ -1433,9 +1435,9 @@ function autoPaint(){const el=$('dt-auto');if(!el||!auto)return;const now=Date.n
     :'<p class=muted>None open. One opens as soon as a tested symbol signals Entry now.</p>');
   if(auto.by_symbol.length)h+='<h3>Results by symbol</h3>'+tbl(['Symbol','Strategy','Trades','In profit','Price moves','Fees','Net'],auto.by_symbol.map(b=>'<tr><td>'+b.symbol+'</td><td>'+b.strategy+'</td><td>'+b.trades+'</td><td>'
       +Math.round(b.wins/b.trades*100)+'%</td><td class=\"'+cls(b.gross)+'\">'+sgn(b.gross)+'</td><td>'+money(b.fees)+'</td><td class=\"'+cls(b.net)+'\">'+sgn(b.net)+'</td></tr>'));
-  h+='<h3>Closed auto-test trades</h3>'+(auto.closed.length?tbl(['Symbol','Strategy','Opened','Held','Exit','Entry → exit','Fees','Net'],auto.closed.map(t=>'<tr><td>'+t.symbol+'</td><td>'+t.strategy+'</td><td>'
+  h+='<h3>Closed auto-test trades</h3>'+(auto.closed.length?tbl(['Symbol','Strategy','Opened','Held','Exit','Entry → exit','Fees','Net','R','Best'],auto.closed.map(t=>'<tr><td>'+t.symbol+'</td><td>'+t.strategy+'</td><td>'
       +new Date(t.opened_ts*1000).toLocaleString('en-GB',{day:'numeric',month:'short',hour:'2-digit',minute:'2-digit'})+'</td><td>'+dur(t.closed_ts-t.opened_ts)+'</td><td>'
-      +(REASON[t.reason]||t.reason)+'</td><td>'+fmt(t.entry)+' → '+fmt(t.exit)+'</td><td>'+money(t.fees)+'</td><td class=\"'+cls(t.net)+'\">'+sgn(t.net)+'</td></tr>'))
+      +(REASON[t.reason]||t.reason)+'</td><td>'+fmt(t.entry)+' → '+fmt(t.exit)+'</td><td>'+money(t.fees)+'</td><td class=\"'+cls(t.net)+'\">'+sgn(t.net)+'</td><td class=\"'+(t.r!=null?cls(t.r):'')+'\">'+rx(t.r)+'</td><td>'+rx(t.mfe_r)+'</td></tr>'))
     :'<p class=muted>None yet.</p>');
   $('dt-arest').innerHTML=h;
   const ab=$('dt-aadd');if(ab)ab.onclick=()=>autoPost('add',{iid:cur.instrumentId});
@@ -1513,14 +1515,19 @@ def daytrader_page():
              "The <b>target</b> line is the price at which selling would exactly cover all of these costs.</p>"
              "</details></section>"
              "<section class='card dt-auto'><h2>Strategy auto-test (runs on the server, 24/7)</h2>"
-             "<p class=muted>Every minute the server checks each symbol below against three versions of the entry strategy: "
+             "<p class=muted>Every minute the server checks each symbol below against four versions of the entry strategy: "
              "<b>Fast</b> (5-minute trend, 1-minute timing); <b>Fast v2</b> (the same, but it skips quiet markets, needs the "
              "1-hour trend up too, sets stops at least 0.3% away measured from the price paid, wants the reward after costs to beat "
              "the risk, trades 24/7 CFDs only in their home market's hours, and cools off for 30 minutes after a stop-out, "
-             "pausing for the day after two); and <b>Swing</b> (1-hour trend, 15-minute timing, stops and targets several times "
-             "wider, so moves can pay crypto's 2% fees). On every <b>Entry now</b> it opens a theoretical $100 trade at the ask "
-             "(one per symbol per strategy) and closes it at the signal's stop or target, or at the bid after 4 hours (fast, "
-             "fast v2) or 48 hours (swing). Costs as above. Nothing is sent to eToro. "
+             "pausing for the day after two); <b>Fast v3</b> (Fast v2 with a nearer 1.5:1 target, and the stop moved up to the "
+             "entry price once the trade has gone 1× its risk in profit); and <b>Swing</b> (1-hour trend, 15-minute timing, stops "
+             "and targets several times wider, so moves can pay crypto's 2% fees, measured from the price paid). Fast v2, Fast v3 "
+             "and Swing skip trades where the spread is more than 15% of the stop distance. <b>Fast</b> is left unchanged as the "
+             "baseline. On every <b>Entry now</b> it opens a theoretical $100 trade at the ask "
+             "(one per symbol per strategy) and closes it at the signal's stop or target, or at the bid after 4 hours (the fast "
+             "versions) or 48 hours (swing). Costs as above. <b>R</b> is the net result divided by the trade's initial risk (the "
+             "net loss had it hit its first stop); <b>Best</b> is the furthest the price went in the trade's favour, in R. "
+             "Nothing is sent to eToro. "
              "This keeps running with the page closed, so the results below show whether the signals make money after fees.</p>"
              "<div id=dt-auto>Loading…</div>"
              "<h3>Charts</h3><div class=dt-key><span><i style='color:#f59e0b'></i>Entry</span><span><i style='color:#34d399'></i>Target</span>"

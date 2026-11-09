@@ -2107,3 +2107,76 @@ def test_autotest_chart_windows(eng, monkeypatch):
     daytrader._cache.clear()
     assert autotest.chart(15200, now + 11 * 60)["mode"] == "idle"   # 16 minutes after the exit: back to 12 hours
     daytrader._cache.clear()
+
+
+def test_swing_from_ask_and_spread_cap():
+    import math
+    from app import strategy as st
+
+    def dip(i):
+        p = 100 * (1 + 0.0004 * i) + 0.05 * math.sin(i / 3)
+        if i >= 290:
+            p -= (min(i, 297) - 290) * 0.15
+        if i >= 298:
+            p += (i - 297) * 0.03
+        return p
+    b1 = _bars(dip)
+    bid = b1[-1]["c"]
+    trend = st.resample(b1, 300)
+    tight = dict(st.SWING, min_trend=4, min_timing=30)                   # same rules on the test bars
+    s = st._judge(trend, b1, bid, bid * 1.0001, True, 0.02, tight)
+    assert s["state"] == "enter" and s["entry"] == bid * 1.0001          # measured from the ask paid
+    assert abs((s["target"] - s["entry"]) - 2 * (s["entry"] - s["stop"])) < 1e-9
+    fast = st._judge(trend, b1, bid, bid * 1.0001, True, 0.02, dict(st.FAST, min_trend=4))
+    assert fast["state"] == "enter" and fast["entry"] == bid             # the baseline keeps its bid-based levels
+    risk = s["entry"] - s["stop"]
+    wide = bid + 0.2 * risk                                              # spread 20% of the stop distance
+    w = st._judge(trend, b1, bid, wide, True, (wide - bid) / bid * 100, tight)
+    assert w["state"] == "spread"
+    assert st._judge(trend, b1, bid, wide, True, (wide - bid) / bid * 100, dict(st.FAST, min_trend=4))["state"] != "spread"
+
+
+def test_fast3_target_and_fast2_spread_cap():
+    import math
+    from datetime import datetime as _dt, timezone as _tz
+    from app import strategy as st
+    mon = _dt(2026, 11, 9, 15, 0, tzinfo=_tz.utc)
+
+    def dip(i):
+        p = 100 * (1 + 0.0004 * i) + 0.05 * math.sin(i / 3)
+        if i >= 290:
+            p -= (min(i, 297) - 290) * 0.15
+        if i >= 298:
+            p += (i - 297) * 0.03
+        return p
+    b1 = _bars(dip)
+    h_up = _bars(lambda i: 80 + 0.4 * i, n=100)
+    bid = b1[-1]["c"]
+    ask = bid * 1.0002
+    s3 = st.evaluate_fast3(b1, h_up, bid, ask, True, 0.04, "cfd", "TSLA.24-7", mon)
+    assert s3["state"] == "enter" and s3["key"] == "fast3" and s3["entry"] == ask
+    assert abs((s3["target"] - ask) - 1.5 * (ask - s3["stop"])) < 1e-9
+    d = ask - s3["stop"]
+    wide = bid + 0.25 * d                                                 # spread a quarter of the stop distance
+    s = st.evaluate_fast2(b1, h_up, bid, wide, True, (wide - bid) / bid * 100, "cfd", "TSLA.24-7", mon)
+    assert s["state"] == "spread"
+
+
+def test_break_even_stop_and_r_stats():
+    from app import autotest
+    tr = {"opened_ts": 1000.0, "entry": 100.0, "stop": 99.0, "target": 101.5}
+    be = autotest.STRATEGIES["fast3"]["be_at_r"]
+    # +1R reached, then back to the entry: closed at break-even, not at the original stop
+    bars = [{"t": 1080, "l": 99.5, "h": 101.0}, {"t": 1140, "l": 98.5, "h": 100.2}]
+    assert autotest.check_exit(tr, bars, 99.0, True, 2000, be_at_r=be) == ("break-even", 100.0)
+    assert autotest.check_exit(tr, bars, 99.0, True, 2000) == ("stop", 99.0)            # without break-even
+    # the candle that reaches +1R also touches the original stop: stop first (cautious)
+    assert autotest.check_exit(tr, [{"t": 1080, "l": 98.9, "h": 101.0}], 99.5, True, 2000, be_at_r=be) == ("stop", 99.0)
+    # armed, then the live bid falls to the entry
+    assert autotest.check_exit(tr, [{"t": 1080, "l": 99.6, "h": 101.1}], 100.0, True, 2000, be_at_r=be) == ("break-even", 100.0)
+    assert autotest.best_price(dict(tr, mfe=None), bars, 100.1) == 101.0
+    t = {"kind": "cfd", "symbol": "TSLA.24-7", "amt": 100.0, "entry": 100.0, "stop": 99.0, "net": 1.5, "mfe": 102.0}
+    r = autotest.r_stats(t)
+    assert abs(r["risk"] - 1.0) < 1e-9 and abs(r["r"] - 1.5) < 1e-9 and abs(r["mfe_r"] - 2.0) < 1e-9
+    stats = autotest._stats([dict(t, r=1.5, fees=0, gross=1.5, reason="target"), dict(t, net=-1, r=-1.0, fees=0, gross=-1, reason="stop")])
+    assert stats["total_r"] == 0.5 and stats["avg_r"] == 0.25

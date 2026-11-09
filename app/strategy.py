@@ -23,6 +23,7 @@ FEE_MULT = 1.5       # target move must be at least this many times the round-tr
 STOP_ATR = 1.5       # stop distance in 5-minute ATRs
 REWARD_R = 2.0       # target distance in multiples of the stop distance
 NEAR_ATR = 0.25      # "at the entry level" = within this many 1-minute ATRs above it
+SPREAD_CAP = 0.15    # Fast v2, Fast v3 and Swing: skip when the spread is more than this share of the stop distance
 
 
 def ema(vals: list[float], n: int) -> list[float]:
@@ -85,7 +86,8 @@ def default_hurdle(kind: str) -> float:
 FAST = {"key": "fast", "name": NAME, "trend": "5-min", "timing": "1-min", "stop_atr": STOP_ATR,
         "reward_r": REWARD_R, "near_atr": NEAR_ATR, "min_trend": 0, "min_timing": MIN_1M}
 SWING = {"key": "swing", "name": "Swing pullback (1-hour trend, 15-min timing, fee filter)", "trend": "1-hour",
-         "timing": "15-min", "stop_atr": 1.5, "reward_r": 2.0, "near_atr": 0.25, "min_trend": 50, "min_timing": 30}
+         "timing": "15-min", "stop_atr": 1.5, "reward_r": 2.0, "near_atr": 0.25, "min_trend": 50, "min_timing": 30,
+         "from_ask": True, "spread_cap": SPREAD_CAP}   # stop/target measured from the ask actually paid
 
 
 def evaluate(bars_1m: list[dict], bid: float | None, ask: float | None, is_open: bool, hurdle_pct: float) -> dict:
@@ -152,11 +154,19 @@ def _judge(trend_bars: list[dict], timing_bars: list[dict], bid, ask, is_open: b
         return out
     reasons.append(f"Target move {reward_pct:.2f}% covers the {hurdle_pct:.2f}% round-trip cost {reward_pct / hurdle_pct:.1f}x"
                    if hurdle_pct > 0 else f"Target move {reward_pct:.2f}%; no fees to cover")
+    risk = P["stop_atr"] * a_tr
+    spread = (ask or bid) - bid
+    if P.get("spread_cap") and spread > P["spread_cap"] * risk:
+        reasons.append(f"Spread {spread:.6g} is {spread / risk * 100:.0f}% of the {risk:.6g} stop distance "
+                       f"(limit {P['spread_cap'] * 100:.0f}%)")
+        out.update(state="spread", headline="Spread too wide for this stop: paying it would eat too much of the "
+                                            "reward and add to the risk. Better to skip.")
+        return out
     if near and turning:
         reasons.append(f"Price is at the {TM} EMA20 pullback level and RSI turned up ({r_prev:.0f} to {r_now:.0f})")
-        risk = P["stop_atr"] * a_tr
-        out.update(state="enter", entry=price, stop=price - risk, target=price + P["reward_r"] * risk,
-                   reward_pct=round(P["reward_r"] * risk / price * 100, 2),
+        base = (ask or bid) if P.get("from_ask") else price   # Fast keeps its original bid-based levels as the baseline
+        out.update(state="enter", entry=base, stop=base - risk, target=base + P["reward_r"] * risk,
+                   reward_pct=round(P["reward_r"] * risk / base * 100, 2),
                    headline="Entry now: uptrend pullback with momentum turning up.")
     elif near:
         reasons.append(f"At the pullback level, waiting for {TM} RSI to turn up (now {r_now:.0f})" if r_now is not None
@@ -177,7 +187,13 @@ MIN_STOP_PCT = 0.30      # never put the stop closer than this % below the price
 SPREAD_STOPS = 3.0       # ...or closer than this many spreads
 HOME = {"SKHY": ("Asia/Seoul", (9, 0), (15, 30), "Korean")}     # 24/7 CFDs follow their home market
 DEFAULT_HOME = ("America/New_York", (9, 30), (16, 0), "US")      # the US names and pre-IPO CFDs
-FAST2 = {"key": "fast2", "name": "Fast v2 (fast + quiet filter, 1-hour trend, spread-aware stops, home-market hours)"}
+FAST2 = {"key": "fast2", "name": "Fast v2 (fast + quiet filter, 1-hour trend, spread-aware stops, home-market hours)",
+         "reward_r": REWARD_R, "spread_cap": SPREAD_CAP}
+# Fast v3 (9 Nov 2026 review of the first 48 auto-test trades: stops hit twice as often as 2:1 targets,
+# while trades left to run to the time limit mostly made money): Fast v2 with a nearer 1.5:1 target.
+# The auto-test also moves its stop to break-even once the price has gone 1x the risk in its favour.
+FAST3 = {"key": "fast3", "name": "Fast v3 (Fast v2 with a 1.5:1 target and a break-even stop after +1R)",
+         "reward_r": 1.5, "spread_cap": SPREAD_CAP}
 
 
 def home_market(symbol: str) -> tuple:
@@ -194,14 +210,17 @@ def home_open(symbol: str, now) -> bool:
 
 
 def evaluate_fast2(bars_1m: list[dict], bars_1h: list[dict], bid, ask, is_open: bool, hurdle_pct: float,
-                   kind: str = "", symbol: str = "", now=None) -> dict:
+                   kind: str = "", symbol: str = "", now=None, P: dict | None = None) -> dict:
     """Like evaluate(), plus: (1) skip quiet markets, (2) the 1-hour trend must agree, (3) stop at least
     MIN_STOP_PCT and SPREAD_STOPS spreads away, (4) stop/target measured from the ask actually paid, and
-    the reward after costs must be at least the risk after costs, (5) 24/7 CFDs only in home-market hours.
-    hurdle_pct includes the spread, as for the other strategies."""
+    the reward after costs must be at least the risk after costs, (5) 24/7 CFDs only in home-market hours,
+    (6) no trade when the spread is more than SPREAD_CAP of the stop distance.
+    hurdle_pct includes the spread, as for the other strategies. P picks the version (FAST2 or FAST3)."""
     from datetime import datetime, timezone
     now = now or datetime.now(timezone.utc)
-    out = {"strategy": FAST2["name"], "key": "fast2", "state": "nodata", "headline": "", "entry": None, "stop": None,
+    P = P or FAST2
+    R = P["reward_r"]
+    out = {"strategy": P["name"], "key": P["key"], "state": "nodata", "headline": "", "entry": None, "stop": None,
            "target": None, "reward_pct": None, "hurdle_pct": round(hurdle_pct, 2), "reasons": [], "ind": {}}
     if not is_open or bid is None:
         out.update(state="closed", headline="Market closed: no live price, so no entry signal.")
@@ -248,7 +267,7 @@ def evaluate_fast2(bars_1m: list[dict], bars_1h: list[dict], bid, ask, is_open: 
     level = min(e20_1, price)                                # buy level, bid terms
     pay = level + spread                                     # what a buy there would cost
     dist = max(STOP_ATR * a5, MIN_STOP_PCT / 100 * pay, SPREAD_STOPS * spread)
-    stop, target = pay - dist, pay + REWARD_R * dist         # exits are hit by the bid
+    stop, target = pay - dist, pay + R * dist                # exits are hit by the bid
     reward_gross = (target - pay) / pay * 100
     net_reward, net_risk = reward_gross - fee_pct, dist / pay * 100 + fee_pct
     out.update(entry=pay, stop=stop, target=target, reward_pct=round(reward_gross, 2))
@@ -257,13 +276,19 @@ def evaluate_fast2(bars_1m: list[dict], bars_1h: list[dict], bid, ask, is_open: 
         out.update(state="fees", headline=f"Uptrend, but after {hurdle_pct:.2f}% costs the reward ({net_reward:.2f}%) "
                                           f"doesn't beat the risk ({net_risk:.2f}%). Better to skip.")
         return out
+    if P.get("spread_cap") and spread > P["spread_cap"] * dist:
+        reasons.append(f"Spread {spread_pct:.3f}% is {spread / dist * 100:.0f}% of the stop distance "
+                       f"(limit {P['spread_cap'] * 100:.0f}%)")
+        out.update(state="spread", headline="Spread too wide for this stop: paying it would eat too much of the "
+                                            "reward and add to the risk. Better to skip.")
+        return out
     reasons.append(f"After costs: reward {net_reward:.2f}% vs risk {net_risk:.2f}%")
     near = price <= e20_1 + NEAR_ATR * (a1 or 0)
     turning = r_now is not None and r_prev is not None and r_now > r_prev and r_prev < 55
     if near and turning:
         d = max(STOP_ATR * a5, MIN_STOP_PCT / 100 * ask, SPREAD_STOPS * spread)
-        out.update(state="enter", entry=ask, stop=ask - d, target=ask + REWARD_R * d,
-                   reward_pct=round(REWARD_R * d / ask * 100, 2),
+        out.update(state="enter", entry=ask, stop=ask - d, target=ask + R * d,
+                   reward_pct=round(R * d / ask * 100, 2),
                    headline="Entry now: pullback in an uptrend on both timeframes, momentum turning up.")
         reasons.append(f"At the 1-min EMA20 buy level and RSI turned up ({r_prev:.0f} to {r_now:.0f})")
     elif near:
@@ -272,3 +297,9 @@ def evaluate_fast2(bars_1m: list[dict], bars_1h: list[dict], bid, ask, is_open: 
         reasons.append(f"Price is {(price - level) / price * 100:.2f}% above the buy level; don't chase")
         out.update(state="wait", headline="Wait for a pullback to the buy level before entering.")
     return out
+
+
+def evaluate_fast3(bars_1m: list[dict], bars_1h: list[dict], bid, ask, is_open: bool, hurdle_pct: float,
+                   kind: str = "", symbol: str = "", now=None) -> dict:
+    """Fast v2's rules with a 1.5:1 target (see FAST3)."""
+    return evaluate_fast2(bars_1m, bars_1h, bid, ask, is_open, hurdle_pct, kind, symbol, now, P=FAST3)
