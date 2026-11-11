@@ -196,14 +196,32 @@ FAST3 = {"key": "fast3", "name": "Fast v3 (Fast v2 with a 1.5:1 target and a bre
          "reward_r": 1.5, "spread_cap": SPREAD_CAP}
 
 
+# Fast v2 + US hours (11 Nov 2026 review): SK hynix 24/7 also moved strongly with US chip stocks in US
+# hours, which Fast v2 skips. This variant also trades it then (weekdays only), so the two can be compared.
+FAST2X = {**FAST2, "key": "fast2x", "name": "Fast v2 + US hours (Fast v2 that also trades SK hynix 24/7 "
+                                             "in US market hours, weekdays)",
+          "extra_hours": {"SKHY": DEFAULT_HOME}}
+
+# Symbols that tend to move together. The auto-test's Swing holds only one trade per group at a time:
+# on 10 Nov 2026 four Swing trades in chip names hit their stops in the same minute.
+GROUPS = {"chips": ("chip", {"SKHY", "SEMICONDUCTORS", "MU", "NVDA", "AMD", "TSM", "AVGO", "SOXL", "ASML",
+                             "INTC", "QCOM", "ARM", "SMH"})}
+
+
+def group(symbol: str) -> str | None:
+    """The name of the group a symbol belongs to (e.g. 'chips'), or None."""
+    base = (symbol or "").upper().split(".")[0]
+    return next((g for g, (_, members) in GROUPS.items() if base in members), None)
+
+
 def home_market(symbol: str) -> tuple:
     return HOME.get(symbol.upper().split(".")[0], DEFAULT_HOME)
 
 
-def home_open(symbol: str, now) -> bool:
-    """Is the home exchange of a 24/7 CFD open now (weekdays, regular hours, local time)?"""
+def home_open(symbol: str, now, market: tuple | None = None) -> bool:
+    """Is the home exchange of a 24/7 CFD (or the given market) open now (weekdays, regular hours, local time)?"""
     from zoneinfo import ZoneInfo
-    tz, start, end, _ = home_market(symbol)
+    tz, start, end, _ = market or home_market(symbol)
     local = now.astimezone(ZoneInfo(tz))
     hm = (local.hour, local.minute)
     return local.weekday() < 5 and start <= hm < end
@@ -225,10 +243,17 @@ def evaluate_fast2(bars_1m: list[dict], bars_1h: list[dict], bid, ask, is_open: 
     if not is_open or bid is None:
         out.update(state="closed", headline="Market closed: no live price, so no entry signal.")
         return out
-    if kind == "cfd" and not home_open(symbol, now):
+    extra = (P.get("extra_hours") or {}).get(symbol.upper().split(".")[0])
+    if kind == "cfd" and not home_open(symbol, now) and not (extra and home_open(symbol, now, extra)):
         tz, start, end, name = home_market(symbol)
-        out.update(state="closed", headline=f"{name} market closed: no trades on 24/7 weekend or overnight prices.")
-        out["reasons"].append(f"Trades only {start[0]:02d}:{start[1]:02d}-{end[0]:02d}:{end[1]:02d} {tz} time, Monday to Friday")
+        if extra:
+            name = f"{name} and {extra[3]} markets"
+        else:
+            name = f"{name} market"
+        out.update(state="closed", headline=f"{name} closed: no trades on 24/7 weekend or overnight prices.")
+        out["reasons"].append(f"Trades only {start[0]:02d}:{start[1]:02d}-{end[0]:02d}:{end[1]:02d} {tz} time"
+                              + (f" or {extra[1][0]:02d}:{extra[1][1]:02d}-{extra[2][0]:02d}:{extra[2][1]:02d} "
+                                 f"{extra[0]} time" if extra else "") + ", Monday to Friday")
         return out
     if len(bars_1m) < MIN_1M or len(bars_1h) < 50:
         out["headline"] = "Not enough recent price history yet to judge an entry."
@@ -303,3 +328,9 @@ def evaluate_fast3(bars_1m: list[dict], bars_1h: list[dict], bid, ask, is_open: 
                    kind: str = "", symbol: str = "", now=None) -> dict:
     """Fast v2's rules with a 1.5:1 target (see FAST3)."""
     return evaluate_fast2(bars_1m, bars_1h, bid, ask, is_open, hurdle_pct, kind, symbol, now, P=FAST3)
+
+
+def evaluate_fast2x(bars_1m: list[dict], bars_1h: list[dict], bid, ask, is_open: bool, hurdle_pct: float,
+                    kind: str = "", symbol: str = "", now=None) -> dict:
+    """Fast v2's rules, also trading SK hynix 24/7 in US market hours (see FAST2X)."""
+    return evaluate_fast2(bars_1m, bars_1h, bid, ask, is_open, hurdle_pct, kind, symbol, now, P=FAST2X)

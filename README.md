@@ -173,7 +173,7 @@ All times are UK time (`TZ=Europe/London`).
 | 15:05 weekdays | **Share analyses:** met watch levels first, then least recently analysed. |
 | Every 5 min | **Queue:** places approved trades whose market has opened, and expires stale approvals (after Approval expiry; approved-but-queued trades after 24 hours). |
 | Every 15 min | **Watchlist prices** refreshed from eToro, for open markets only. |
-| Every minute | **Strategy auto-test:** checks each symbol on the auto-test list against the Fast, Fast v2, Fast v3 and Swing strategies, opening and closing $100 paper trades (see the Day trader page). Never trades. |
+| Every minute | **Strategy auto-test:** checks each symbol on the auto-test list against the Fast, Fast v2, Fast v3, Fast v2 + US hours and Swing strategies, opening and closing $100 paper trades (see the Day trader page). Never trades. |
 | 21:30 daily | **Daily summary** email. |
 
 You can also run an analysis of any watchlist entry at any time from the Overview page, or of a symbol that's off the watchlist but still has an active watch level (its **Analyse now** link). It counts towards Analyses per day.
@@ -266,8 +266,11 @@ A first step towards intraday tools. Search for any eToro instrument by symbol o
     - **cooling off:** no new trade in a symbol for 30 minutes after a stop-out, and none for the rest of the day (London time) after two stop-outs ("Paused").
     - **spread cap** (added 9 Nov 2026): no trade when the spread is more than 15% of the stop distance ("Spread too wide"). In the first 48 trades, those with the spread above 20% of the stop lost about 3.7 times as much as they made.
   - **Fast v3** (added 9 Nov 2026): Fast v2 with a nearer **1.5:1 target**, and the stop moved up to the entry price (**break-even**) once a candle's high has reached 1× the risk in profit, from the next candle on. Added because in the first 48 trades stops were hit twice as often as 2:1 targets, while trades left to the time limit mostly made money.
+  - **Fast v2 + US hours** (added 11 Nov 2026, short name "v2+US"): Fast v2 exactly, except that SK hynix 24/7 may also trade in US market hours (09:30–16:00 New York, weekdays), not only in Seoul hours. On 11 Nov SK hynix rose another 4% in US hours with the US chip stocks, which Fast v2 skips. It starts switched on only for SK hynix (elsewhere it would just repeat Fast v2), so the two can be compared.
   - **Fast** is left unchanged as the baseline, so the others can be compared with it.
-  - **Swing:** the same rules on a 1-hour trend with 15-minute timing, so stops and targets come out several times wider (typically 3–6% to target), enough to clear crypto's 2% round trip; trades close at stop, target or after **48 hours**. Since 9 Nov 2026 its stop and target are measured from the ask actually paid (as Fast v2), not the bid, and it has the same spread cap; before that the spread came off the target and was added to the risk, so on wide-spread CFDs the target could end up nearer than the stop.
+  - **Swing:** the same rules on a 1-hour trend with 15-minute timing, so stops and targets come out several times wider (typically 3–6% to target), enough to clear crypto's 2% round trip; trades close at stop, target or after **48 hours**. Since 9 Nov 2026 its stop and target are measured from the ask actually paid (as Fast v2), not the bid, and it has the same spread cap; before that the spread came off the target and was added to the risk, so on wide-spread CFDs the target could end up nearer than the stop. Two limits added 11 Nov 2026:
+    - **not on crypto or commission shares:** Swing opens no new trades where costs are charged on top of the spread (crypto's 2% round trip, the $1-a-side share commission). Its losses there were $4–5 each (HUM, MU, AAVE, AVAX); it carries on for the 24/7 CFDs, indices and ETFs.
+    - **one trade per group:** symbols that move together (the chip group: SK hynix, the Semiconductors index, MU, Nvidia, AMD, TSMC, Broadcom, ASML, Intel, Qualcomm, Arm, SOXL, SMH) hold only one Swing trade at a time, shown as "Already holding a Swing trade in …". On 10 Nov four chip Swing trades hit their stops in the same minute: four trades, but really one bet.
 
   Every minute the server checks each symbol: on **Entry now** it records a theoretical $100 buy at the live ask, one open trade per symbol per strategy, and closes it at the signal's stop or target, checking every 1-minute candle since the entry (if one candle touched both, the stop is assumed first, the cautious choice), or at the bid at the time limit. Costs follow the same eToro rules as the paper trades (share commission at the $1 default).
 
@@ -275,7 +278,7 @@ A first step towards intraday tools. Search for any eToro instrument by symbol o
 
   **R-multiples:** each trade's initial risk is the net loss (fees included) it would have made at its first stop. The card and the daily email show results in **R** (net ÷ initial risk) as well as dollars, and each closed trade shows its **Best**: the furthest the price went in its favour while open, in R (recorded from 9 Nov 2026), to show where targets should sit.
 
-  The card shows, for each strategy, closed trades, % in profit after fees, targets/stops/time-outs, gross price moves, fees paid, total net and total/average R; then each tested symbol with its fast and swing signals now, open auto-test trades with their live net, results by symbol and strategy, and every closed trade. **Editing the test list:** search for any eToro instrument in the card's **Test list** box to add it (its symbol, name and cost type are looked up on eToro, so the right fees apply), or press **Add <symbol>** for the one selected at the top. Each symbol has **Fast**, **Fast v2** and **Swing** switches: switching one off stops that strategy opening new trades in that symbol (a trade already open still runs to its stop, target or time limit), e.g. swing only for 2%-fee crypto. **Remove** takes a symbol off the list and closes its open trades at the last price. It starts with BTC, SOL, SUI, AVAX, TSLA.24-7 and NVDA.24-7. The **daily summary email** includes an auto-test section: today's and all-time results per strategy, open trades, results by symbol and each symbol's signals.
+  The card shows, for each strategy, closed trades, % in profit after fees, targets/stops/time-outs, gross price moves, fees paid, total net and total/average R; then each tested symbol with its fast and swing signals now, open auto-test trades with their live net, results by symbol and strategy, and every closed trade. **Editing the test list:** search for any eToro instrument in the card's **Test list** box to add it (its symbol, name and cost type are looked up on eToro, so the right fees apply), or press **Add <symbol>** for the one selected at the top. Each symbol has a switch per strategy (**Fast**, **Fast v2**, **Fast v3**, **v2+US**, **Swing**): switching one off stops that strategy opening new trades in that symbol (a trade already open still runs to its stop, target or time limit), e.g. swing only for 2%-fee crypto. **Remove** takes a symbol off the list and closes its open trades at the last price. It starts with BTC, SOL, SUI, AVAX, TSLA.24-7 and NVDA.24-7. The **daily summary email** includes an auto-test section: today's and all-time results per strategy, open trades, results by symbol and each symbol's signals.
 - Charts are in the auto-test card's grid (see below): a trade window when an auto-test trade is running, otherwise the last 12 hours.
 - Nothing is ever sent to eToro from this page.
 
@@ -328,7 +331,7 @@ Email is sent through Gmail and SMS through Twilio. Both are optional.
 3. **Trades proposed by the app**, with their outcome and the reason for any failure or block.
 4. **Bought outside the app today:** positions opened in the eToro app or website.
 5. **Watch levels** and their status; symbols not on the watchlist are labelled as such, with a link to analyse them.
-6. **Strategy auto-test:** for each strategy (Fast, Fast v2, Swing), trades closed today and all-time, % in profit after fees and net; open auto-test trades; results by symbol; each tested symbol's current signals.
+6. **Strategy auto-test:** for each strategy (Fast, Fast v2, Fast v3, Fast v2 + US hours, Swing), trades closed today and all-time, % in profit after fees and net; open auto-test trades; results by symbol; each tested symbol's current signals.
 7. **Scorecard headline:** how Buy and Overweight calls have done against VWRL.L so far.
 8. **Next share run:** the shares lined up for the next 15:05.
 9. **Mode and kill switch.**
@@ -359,6 +362,7 @@ Comma-separated entries:
 | `META` | Same symbol on eToro and Yahoo Finance. |
 | `IUCS.L` | London-listed UCITS fund. |
 | `CVX.US=CVX` | Buy eToro `CVX.US` (Chevron); research Yahoo `CVX`. |
+| `BRK.B` | Buy eToro `BRK.B`; research Yahoo `BRK-B` automatically (Yahoo writes US share classes `.A`/`.B` with a dash; added 11 Nov 2026 after a BRK.B analysis found no data). |
 | `BTC=BTC-USD@crypto` | Buy eToro `BTC`; research `BTC-USD` with the crypto pipeline, at the crypto run time. |
 
 Removing an entry does not sell it; holdings stay until sold. London (`.L`) instruments trade 08:00–16:30 UK. US shares trade 14:30–21:00 UK, and eToro also offers extended hours with wider spreads.
@@ -403,7 +407,7 @@ On Windows, `run-local.bat` runs the full app at `http://localhost:8000/`. It al
 | `app/policy.py` | Watchlist parsing, rating → proposal, hard limits, approval rules, and the account-rules text. Pure functions, fully tested. |
 | `app/engine.py` | Analysis, proposals, approval, execution, the queue, scheduled runs, pre-flight, overrides, the daily summary, the audit trail and one-off fixes. |
 | `app/etoro.py` prices | `rates()` takes bid/ask from eToro's v2 rates endpoint whenever it is newer than v1 (v1 was seen returning crypto prices hours old); v1 still supplies the currency conversion rates. |
-| `app/autotest.py` | Server-side auto-test of the Fast, Fast v2, Fast v3 and Swing entry strategies: $100 paper trades on every Entry now, closed at stop/target/break-even/time limit, checked every minute; R-multiples and best price per trade; digest for the daily email. |
+| `app/autotest.py` | Server-side auto-test of the Fast, Fast v2, Fast v3, Fast v2 + US hours and Swing entry strategies: $100 paper trades on every Entry now, closed at stop/target/break-even/time limit, checked every minute; R-multiples and best price per trade; digest for the daily email. |
 | `app/strategy.py` | Day trader entry signals: fast (5-min trend, 1-min timing), fast v2 (plus quiet filter, 1-hour trend, spread-aware stops, home-market hours) and swing (1-hour trend, 15-min timing); ATR stops/targets and fee filter. |
 | `app/daytrader.py` | Day trader test page: eToro instrument search, live price sampling and 30-second candles. |
 | `app/terms.py` | Holding period per symbol; the short-term agent note; stop-loss and take-profit extraction and sanity checks. |

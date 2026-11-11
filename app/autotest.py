@@ -32,7 +32,12 @@ STRATEGIES = {"fast": {"label": "Fast (5-min trend)", "short": "Fast", "max_hour
                         "cooldown_min": 30, "max_stops_day": 2},
               "fast3": {"label": "Fast v3 (1.5:1, break-even)", "short": "Fast v3", "max_hours": 4.0,
                         "cooldown_min": 30, "max_stops_day": 2, "be_at_r": 1.0},
-              "swing": {"label": "Swing (1-hour trend)", "short": "Swing", "max_hours": 48.0}}
+              "fast2x": {"label": "Fast v2 + US hours (SK hynix 24/7 also in US hours)", "short": "v2+US",
+                         "max_hours": 4.0, "cooldown_min": 30, "max_stops_day": 2, "only": ("SKHY",)},
+              # Swing: not on crypto or commission shares (its 2% / $2 costs turned stops into $4-5 losses),
+              # and one trade at a time per group of symbols that move together (see strategy.GROUPS).
+              "swing": {"label": "Swing (1-hour trend)", "short": "Swing", "max_hours": 48.0,
+                        "skip_kinds": ("crypto", "stock"), "one_per_group": True}}
 MAX_HOURS = STRATEGIES["fast"]["max_hours"]
 SEED = [(100000, "BTC", "crypto"), (100063, "SOL", "crypto"), (100340, "SUI", "crypto"),
         (100085, "AVAX", "crypto"), (15200, "TSLA.24-7", "cfd"), (15574, "NVDA.24-7", "cfd")]
@@ -66,14 +71,25 @@ def _ensure() -> None:
         for col, kind in (("swing_state", "TEXT"), ("swing_headline", "TEXT"), ("name", "TEXT"),
                           ("fast_on", "INTEGER DEFAULT 1"), ("swing_on", "INTEGER DEFAULT 1"),
                           ("fast2_state", "TEXT"), ("fast2_headline", "TEXT"), ("fast2_on", "INTEGER DEFAULT 1"),
-                          ("fast3_state", "TEXT"), ("fast3_headline", "TEXT"), ("fast3_on", "INTEGER DEFAULT 1")):
+                          ("fast3_state", "TEXT"), ("fast3_headline", "TEXT"), ("fast3_on", "INTEGER DEFAULT 1"),
+                          ("fast2x_state", "TEXT"), ("fast2x_headline", "TEXT"), ("fast2x_on", "INTEGER DEFAULT 1")):
             if col not in scols:
                 c.execute(f"ALTER TABLE autotest_symbols ADD COLUMN {col} {kind}")
+                if col == "fast2x_on":                          # the variant starts on only where it differs
+                    for row in c.execute("SELECT iid, symbol FROM autotest_symbols").fetchall():
+                        c.execute("UPDATE autotest_symbols SET fast2x_on=? WHERE iid=?",
+                                  (1 if _default_on("fast2x", row["symbol"]) else 0, row["iid"]))
         if not c.execute("SELECT 1 FROM autotest_meta WHERE key='seeded'").fetchone():
             for iid, sym, kind in SEED:
-                c.execute("INSERT OR IGNORE INTO autotest_symbols(iid, symbol, kind, added) VALUES (?,?,?,?)",
-                          (iid, sym, kind, _now_iso()))
+                c.execute("INSERT OR IGNORE INTO autotest_symbols(iid, symbol, kind, added, fast2x_on) VALUES (?,?,?,?,?)",
+                          (iid, sym, kind, _now_iso(), 1 if _default_on("fast2x", sym) else 0))
             c.execute("INSERT INTO autotest_meta(key, value) VALUES ('seeded', ?)", (_now_iso(),))
+
+
+def _default_on(key: str, symbol: str) -> bool:
+    """Strategies with an 'only' list start switched on just for those symbols."""
+    only = STRATEGIES[key].get("only")
+    return not only or (symbol or "").upper().split(".")[0] in only
 
 
 def costs(kind: str, symbol: str, amt: float, ask: float, bid: float, comm: float = COMMISSION, fx: float = 0.0) -> dict:
@@ -121,8 +137,9 @@ def add_symbol(iid: int, symbol: str | None = None, kind: str | None = None, nam
             raise ValueError(f"eToro has no instrument {iid}")
         symbol, kind, name = symbol or sym, kind or kd, name or nm
     with store._lock, store.connect() as c:
-        c.execute("INSERT OR IGNORE INTO autotest_symbols(iid, symbol, kind, name, added, fast_on, swing_on, fast2_on, fast3_on) "
-                  "VALUES (?,?,?,?,?,1,1,1,1)", (int(iid), symbol, kind, name, _now_iso()))
+        c.execute("INSERT OR IGNORE INTO autotest_symbols(iid, symbol, kind, name, added, fast_on, swing_on, fast2_on, "
+                  "fast3_on, fast2x_on) VALUES (?,?,?,?,?,1,1,1,1,?)",
+                  (int(iid), symbol, kind, name, _now_iso(), 1 if _default_on("fast2x", symbol) else 0))
     store.log("info", f"auto-test: added {symbol}")
     return {"iid": int(iid), "symbol": symbol, "kind": kind, "name": name}
 
@@ -256,10 +273,26 @@ def tick() -> None:
                           (str(e)[:200], _now_iso(now), s["iid"]))
 
 
-def blocked(iid: int, key: str, now: float) -> str | None:
-    """Why a strategy may not open a trade in this symbol right now (cooling off after a stop, or paused
-    for the day after too many stops), or None. Only strategies that set these limits are affected."""
+KIND_WHY = {"crypto": "crypto's 2% round-trip fee", "stock": "the $1-a-side share commission"}
+
+
+def blocked(iid: int, key: str, now: float, symbol: str | None = None, kind: str | None = None) -> str | None:
+    """Why a strategy may not open a trade in this symbol right now, or None: not run on this kind of asset,
+    already holding a trade in a symbol of the same group, cooling off after a stop, or paused for the day
+    after too many stops. Only strategies that set these limits are affected."""
     cfg = STRATEGIES[key]
+    if kind and kind in cfg.get("skip_kinds", ()):
+        return f"{cfg['short']} is not run here: {KIND_WHY.get(kind, 'the costs')} turned its stops into big losses."
+    g = strategy.group(symbol) if (symbol and cfg.get("one_per_group")) else None
+    if g:
+        with store._lock, store.connect() as c:
+            others = [r["symbol"] for r in c.execute(
+                "SELECT symbol FROM autotrades WHERE status='open' AND COALESCE(strategy,'fast')=? AND iid<>?",
+                (key, int(iid)))]
+        same = [o for o in others if strategy.group(o) == g]
+        if same:
+            return (f"Already holding a {cfg['short']} trade in {same[0]}, which moves with this one "
+                    f"({strategy.GROUPS[g][0]} group): one at a time.")
     cool, most = cfg.get("cooldown_min"), cfg.get("max_stops_day")
     if not cool and not most:
         return None
@@ -297,19 +330,22 @@ def _tick_one(s: dict, r: dict | None, now: float) -> None:
                                                 datetime.fromtimestamp(now, timezone.utc))
         sigs["fast3"] = strategy.evaluate_fast3(bars1, bars_h, bid, ask, is_open, hurdle, kind, sym,
                                                 datetime.fromtimestamp(now, timezone.utc))
+        sigs["fast2x"] = strategy.evaluate_fast2x(bars1, bars_h, bid, ask, is_open, hurdle, kind, sym,
+                                                  datetime.fromtimestamp(now, timezone.utc))
     except Exception as e:  # noqa: BLE001
-        for k in ("swing", "fast2", "fast3"):
+        for k in ("swing", "fast2", "fast3", "fast2x"):
             sigs.setdefault(k, {"state": "error", "headline": str(e)[:200]})
     for key in STRATEGIES:                                  # show cooling-off / paused on the page
-        why = blocked(iid, key, now)
+        why = blocked(iid, key, now, sym, kind)
         if why and not _open_trade(iid, key):
             sigs[key] = {**sigs[key], "state": "paused", "headline": why, "blocked": True}
     with store._lock, store.connect() as c:
         c.execute("UPDATE autotest_symbols SET last_state=?, last_headline=?, swing_state=?, swing_headline=?, "
-                  "fast2_state=?, fast2_headline=?, fast3_state=?, fast3_headline=?, last_checked=?, last_bid=? WHERE iid=?",
+                  "fast2_state=?, fast2_headline=?, fast3_state=?, fast3_headline=?, fast2x_state=?, fast2x_headline=?, "
+                  "last_checked=?, last_bid=? WHERE iid=?",
                   (sigs["fast"]["state"], sigs["fast"]["headline"], sigs["swing"]["state"], sigs["swing"]["headline"],
                    sigs["fast2"]["state"], sigs["fast2"]["headline"], sigs["fast3"]["state"], sigs["fast3"]["headline"],
-                   _now_iso(now), bid, iid))
+                   sigs["fast2x"]["state"], sigs["fast2x"]["headline"], _now_iso(now), bid, iid))
     for key, cfg in STRATEGIES.items():
         t = _open_trade(iid, key)
         ex = None
@@ -330,7 +366,7 @@ def _tick_one(s: dict, r: dict | None, now: float) -> None:
         sig = sigs[key]
         if s.get(f"{key}_on", 1) in (0, "0"):
             continue                                        # strategy switched off for this symbol
-        if sig.get("blocked") or blocked(iid, key, now):
+        if sig.get("blocked") or blocked(iid, key, now, sym, kind):
             continue                                        # cooling off / paused after stop-outs
         if sig.get("state") == "enter" and ask is not None:
             with store._lock, store.connect() as c:

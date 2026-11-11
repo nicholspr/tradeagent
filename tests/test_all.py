@@ -1887,9 +1887,12 @@ def test_autotest_opens_on_signal_and_closes_at_stop_target_or_time(eng, monkeyp
         c.executescript(autotest.CREATE)
         c.execute("INSERT OR IGNORE INTO autotest_meta(key, value) VALUES ('seeded','x')")
     autotest.add_symbol(15200, "TSLA.24-7", "cfd")
+    for k in autotest.STRATEGIES:                                # only the original fast here: the filtered
+        if k != "fast":                                          # versions trade in US hours, so the test
+            autotest.set_enabled(15200, k, False)                # would depend on the time of day
     autotest.set_enabled(15200, "fast", False)
     autotest.tick()
-    assert autotest.summary()["open"] == []                      # fast switched off: no trade despite Entry now
+    assert autotest.summary()["open"] == []
     autotest.set_enabled(15200, "fast", True)
     daytrader._cache.clear()
     autotest.tick()
@@ -2180,3 +2183,69 @@ def test_break_even_stop_and_r_stats():
     assert abs(r["risk"] - 1.0) < 1e-9 and abs(r["r"] - 1.5) < 1e-9 and abs(r["mfe_r"] - 2.0) < 1e-9
     stats = autotest._stats([dict(t, r=1.5, fees=0, gross=1.5, reason="target"), dict(t, net=-1, r=-1.0, fees=0, gross=-1, reason="stop")])
     assert stats["total_r"] == 0.5 and stats["avg_r"] == 0.25
+
+
+def test_fast2x_trades_skhy_in_us_hours_only():
+    import math
+    from datetime import datetime as _dt, timezone as _tz
+    from app import strategy as st
+
+    def dip(i):
+        p = 100 * (1 + 0.0004 * i) + 0.05 * math.sin(i / 3)
+        if i >= 290:
+            p -= (min(i, 297) - 290) * 0.15
+        if i >= 298:
+            p += (i - 297) * 0.03
+        return p
+    b1 = _bars(dip)
+    h_up = _bars(lambda i: 80 + 0.4 * i, n=100)
+    bid = b1[-1]["c"]
+    ask = bid * 1.0002
+    us_wed = _dt(2026, 11, 11, 16, 0, tzinfo=_tz.utc)             # 11:00 New York, 01:00 Seoul
+    assert st.evaluate_fast2(b1, h_up, bid, ask, True, 0.04, "cfd", "SKHY.24-7", us_wed)["state"] == "closed"
+    s = st.evaluate_fast2x(b1, h_up, bid, ask, True, 0.04, "cfd", "SKHY.24-7", us_wed)
+    assert s["state"] == "enter" and s["key"] == "fast2x"
+    seoul = _dt(2026, 11, 11, 2, 0, tzinfo=_tz.utc)                # 11:00 Seoul: both trade
+    assert st.evaluate_fast2x(b1, h_up, bid, ask, True, 0.04, "cfd", "SKHY.24-7", seoul)["state"] == "enter"
+    sat = _dt(2026, 11, 14, 16, 0, tzinfo=_tz.utc)                 # Saturday: neither
+    x = st.evaluate_fast2x(b1, h_up, bid, ask, True, 0.04, "cfd", "SKHY.24-7", sat)
+    assert x["state"] == "closed" and "Korean and US markets closed" in x["headline"]
+    night = _dt(2026, 11, 11, 22, 0, tzinfo=_tz.utc)               # TSLA at night: same as Fast v2
+    assert st.evaluate_fast2x(b1, h_up, bid, ask, True, 0.04, "cfd", "TSLA.24-7", night)["state"] == "closed"
+
+
+def test_swing_skips_fee_assets_and_holds_one_per_group(eng):
+    import time as _t
+    engine, store, sent, fs, rating = eng
+    from app import autotest, strategy as st
+    autotest._ensure()
+    now = _t.time()
+    assert st.group("SKHY.24-7") == st.group("Semiconductors") == st.group("NVDA.24-7") == "chips"
+    assert st.group("TSLA.24-7") is None
+    assert "crypto" in autotest.blocked(1, "swing", now, "AVAX", "crypto")
+    assert "commission" in autotest.blocked(2, "swing", now, "MU", "stock")
+    assert autotest.blocked(3, "fast2", now, "AVAX", "crypto") is None             # only Swing skips these
+    assert autotest.blocked(15785, "swing", now, "SKHY.24-7", "cfd") is None
+    with store._lock, store.connect() as c:
+        c.execute("INSERT INTO autotrades(iid, symbol, kind, strategy, opened_ts, amt, entry, stop, target, status) "
+                  "VALUES (560,'Semiconductors','other','swing',?,100,1350,1330,1390,'open')", (now - 600,))
+    why = autotest.blocked(15785, "swing", now, "SKHY.24-7", "cfd")
+    assert why and "Semiconductors" in why and "chip" in why
+    assert autotest.blocked(560, "swing", now, "Semiconductors", "other") is None   # its own open trade doesn't count
+    assert autotest.blocked(15200, "swing", now, "TSLA.24-7", "cfd") is None        # not in the group
+    assert autotest.blocked(15785, "fast2", now, "SKHY.24-7", "cfd") is None        # only Swing has the group rule
+
+
+def test_fast2x_starts_on_only_for_skhy(eng):
+    engine, store, sent, fs, rating = eng
+    from app import autotest
+    a = autotest.add_symbol(15785, "SKHY.24-7", "cfd")
+    b = autotest.add_symbol(15200, "TSLA.24-7", "cfd")
+    on = {s["symbol"]: s["fast2x_on"] for s in autotest.symbols()}
+    assert on["SKHY.24-7"] == 1 and on["TSLA.24-7"] == 0 and a and b
+
+
+def test_watchlist_share_class_research_ticker():
+    from app import policy
+    items = {i.symbol: i.yf for i in policy.parse_watchlist("BRK.B, IGLN.L, BTC=BTC-USD@crypto, CVX.US=CVX, META")}
+    assert items == {"BRK.B": "BRK-B", "IGLN.L": "IGLN.L", "BTC": "BTC-USD", "CVX.US": "CVX", "META": "META"}

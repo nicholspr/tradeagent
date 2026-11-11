@@ -16,6 +16,13 @@ class WatchItem:
     asset_type: str = "stock"
 
 
+def _yahoo(sym: str) -> str:
+    """Yahoo Finance writes US share classes with a dash: eToro BRK.B is BRK-B (BRK.B finds no data).
+    Only .A and .B are changed, so exchange suffixes such as .L stay as they are."""
+    base, dot, cls = sym.rpartition(".")
+    return f"{base}-{cls}" if dot and base.isalpha() and cls in ("A", "B") else sym
+
+
 def parse_watchlist(text: str) -> list[WatchItem]:
     """"META, BTC=BTC-USD@crypto" -> items. '=' gives the research ticker, '@' the asset type."""
     out = []
@@ -28,7 +35,7 @@ def parse_watchlist(text: str) -> list[WatchItem]:
             raw, asset = raw.split("@", 1)
         sym, _, yf = raw.partition("=")
         sym = sym.strip().upper()
-        out.append(WatchItem(sym, (yf.strip() or sym).upper(), asset.strip().lower() or "stock"))
+        out.append(WatchItem(sym, (yf.strip() or _yahoo(sym)).upper(), asset.strip().lower() or "stock"))
     return out
 
 
