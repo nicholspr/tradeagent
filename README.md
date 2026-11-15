@@ -202,7 +202,12 @@ Reports often say "wait for X" rather than "buy now", for example *"buy on a dai
 
    Numbers more than 40% away from the current price are discarded as misreadings. A new analysis of the same share replaces its earlier conditions. A Buy or Overweight analysis clears them, because it has already acted.
 2. **Checking.** At 06:30 each condition is compared with the previous **completed** daily candle from eToro; today's still-forming candle is ignored. The app marks it **Met**, **Cancelled** or **Expired**, and records the close it checked.
-3. **Acting.** A met condition moves that share to the **front** of its next scheduled run. The agents are told which condition was met and when, and asked to re-check it with fresh data. **Nothing is bought from a condition alone.** The new analysis's rating and your limits decide.
+3. **Acting.** A met condition moves that share to the **front** of its next scheduled run. The agents are told which condition was met and when, and asked to re-check it with fresh data. **Nothing is bought from a condition alone.** The new analysis's rating and your limits decide:
+   - **Buy or Overweight:** a normal buy.
+   - **Hold** (since 15 Nov 2026): treated as **Overweight**, a **half-size buy** (half of Max per trade), because the agents' own earlier plan has been met and the fresh look found no reason against it. The eToro order carries a **stop-loss at the level's cancel price** ("cancelled on a close below …") when that is 1–25% below the price, so eToro closes the position if the idea fails, even with the app offline. Emails and the proposal show the rating as "Hold → Overweight (watch level met)".
+   - **Underweight or Sell:** never overridden; no buy.
+
+   All the usual limits, the daily caps, the cash buffer, the position cap and the approval rules still apply. To switch the Hold rule off, set `LEVEL_MET_BUY = False` in `app/engine.py`.
 4. **Where you see them:**
    - the **Watch levels** card on the Overview page: symbol, condition, status, last close, expiry and the report it came from;
    - a **"Watch levels" email** when a condition is met or cancelled;

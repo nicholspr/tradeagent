@@ -154,6 +154,7 @@ def _analyse(item: policy.WatchItem, *, manual: bool) -> dict:
         short = terms.agent_note(item.symbol)
         if short:
             rules += "\n\n" + short
+        met = [lv for lv in levels.active(item.symbol) if lv["status"] == "triggered"]
         note = levels.trigger_note(item.symbol)
         if note:
             rules += "\n\n" + note
@@ -166,23 +167,51 @@ def _analyse(item: policy.WatchItem, *, manual: bool) -> dict:
         notify.email(f"Analysis failed: {item.symbol}", f"{e}")
         return {"error": str(e)}
 
-    if str(rating).lower() not in ("buy", "overweight"):
+    # Option C (15 Nov 2026): a met watch level followed by a Hold is treated as Overweight, a half-size buy,
+    # with an eToro stop-loss at the level's cancel price when that is 1-25% below the price. Underweight and
+    # Sell are never overridden, and all the usual limits, caps and approval rules still apply.
+    price = _float(inst.get("rate"))
+    level_buy = LEVEL_MET_BUY and bool(met) and str(rating).strip().lower() == "hold"
+    act_rating = rating
+    if level_buy:
+        act_rating = f"{rating} → Overweight (watch level met)"
+        store.log("info", f"{item.symbol}: watch level met and rated Hold, so treated as Overweight (half-size buy)")
+    if str(rating).lower() not in ("buy", "overweight") and not level_buy:
         try:
-            levels.record(item.symbol, run_id, decision, _float(inst.get("rate")))
+            levels.record(item.symbol, run_id, decision, price)
         except Exception as e:  # noqa: BLE001
             store.log("warn", f"watch levels for {item.symbol} not saved: {e}")
     else:
         levels.record_none(item.symbol)
     h = book.holdings.get(inst["instrumentId"])
     hv, hpos, hpend = (h.value_usd, h.positions, h.pending_usd) if h else (0.0, [], 0.0)
-    prop = policy.propose(rating, holding_value=hv, holding_positions=hpos, pending_usd=hpend,
-                          cash=book.cash_usd, portfolio_total=book.total_usd, s=s)
+    prop = policy.propose("overweight" if level_buy else rating, holding_value=hv, holding_positions=hpos,
+                          pending_usd=hpend, cash=book.cash_usd, portfolio_total=book.total_usd, s=s)
+    if level_buy:
+        prop.reason = "watch level met and rated Hold: treated as Overweight (half size)"
     stops = None
-    if prop.action == "buy" and terms.term(item.symbol) == terms.SHORT:
+    if level_buy and prop.action == "buy":
+        sl = level_stop(met, price)
+        stops = (sl, None, "") if sl else None
+        store.log("info", f"{item.symbol} level buy stop-loss: "
+                          + (f"{sl:g} (the level's cancel price)" if sl else "none (no cancel price 1-25% below the price)"))
+    elif prop.action == "buy" and terms.term(item.symbol) == terms.SHORT:
         stops = terms.stops_from(item.yf, decision, _float(inst.get("rate")))
         store.log("info", f"{item.symbol} short-term levels: stop-loss {stops[0]}, take-profit {stops[1]}"
                           + (f" ({stops[2]})" if stops[2] else ""))
-    return _act(item.symbol, inst, book, s, rating, decision, run_id, prop, manual, stops=stops)
+    return _act(item.symbol, inst, book, s, act_rating, decision, run_id, prop, manual, stops=stops)
+
+
+LEVEL_MET_BUY = True     # option C: met watch level + Hold -> half-size buy (set False to switch off)
+
+
+def level_stop(met: list[dict], price: float | None) -> float | None:
+    """The highest cancel price among the met levels that sits 1-25% below the current price, or None."""
+    if not price:
+        return None
+    ok = [lv["invalid_below"] for lv in met if lv.get("invalid_below")
+          and price * (1 - terms.STOP_MAX) <= lv["invalid_below"] <= price * (1 - terms.STOP_MIN)]
+    return max(ok) if ok else None
 
 
 def _act(symbol, inst, book, s, rating, decision, run_id, prop, manual=False, stops=None) -> dict:

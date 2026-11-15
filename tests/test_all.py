@@ -2403,3 +2403,30 @@ def test_scorecard_scores_holds():
     rows = [{"rating": "Hold", "vs": {5: -2.0}, "returns": {5: 1.0}}, {"rating": "Hold", "vs": {5: 3.0}, "returns": {5: 4.0}}]
     assert scorecard.worked(rows[0], 5) is True and scorecard.worked(rows[1], 5) is False
     assert "staying out was right 50%" in scorecard.headline(rows)
+
+
+def test_met_level_plus_hold_buys_half_size_with_stop_at_cancel_price(eng, monkeypatch):
+    engine, store, sent, fs, rating = eng
+    from app import levels, policy
+    store.set_setting("mode", "auto")
+    store.set_setting("watchlist", "META")
+    rate = float(engine.client().find_instrument("META")["rate"])
+    met = [{"id": 1, "ticker": "META", "kind": "close_above", "low": rate * 0.98, "high": rate * 0.98,
+            "invalid_below": round(rate * 0.92, 2), "status": "triggered", "trigger_info": "closed above"}]
+    monkeypatch.setattr(levels, "active", lambda t=None: met if t in (None, "META") else [])
+    rating["v"] = "Hold"
+    fs.calls.clear()
+    out = engine.analyse(policy.parse_watchlist("META")[0])
+    assert "Overweight (watch level met)" in out["rating"]
+    body = [c for c in fs.calls if c[0] == "POST"][-1][3]
+    assert body["stopLossRate"] == round(rate * 0.92, 2) and "takeProfitRate" not in body
+    p = store.proposals(None, 1)[0]
+    max_trade = float(store.get_settings()["max_trade_usd"])
+    assert p["action"] == "buy" and p["amount_usd"] <= max_trade * 0.5 + 0.01
+    # Underweight is never overridden, and no met level means a Hold stays a Hold
+    rating["v"] = "Underweight"
+    assert engine.analyse(policy.parse_watchlist("META")[0])["rating"] == "Underweight"
+    monkeypatch.setattr(levels, "active", lambda t=None: [])
+    rating["v"] = "Hold"
+    assert engine.analyse(policy.parse_watchlist("META")[0])["rating"] == "Hold"
+    assert engine.level_stop(met, rate) == round(rate * 0.92, 2) and engine.level_stop(met, rate * 0.5) is None
