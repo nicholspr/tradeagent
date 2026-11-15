@@ -507,22 +507,29 @@ def _fail(pid: int, err: str) -> dict:
 # ---------------------------------------------------------------- scheduled jobs
 def scheduled_analysis(asset: str = "stock") -> None:
     s = store.get_settings()
-    items = [i for i in policy.parse_watchlist(s["watchlist"]) if (i.asset_type == "crypto") == (asset == "crypto")]
     limit = int(float(s["analyses_per_day"] or 0))
     done = store.runs_since(_tracking_start_iso())
-    if not items:
-        store.log("info", f"scheduled {asset} run: no {asset} entries in the watchlist")
-        return
     if done >= limit:
         store.log("warn", f"scheduled {asset} run skipped: daily analysis limit reached "
                           f"({done} of {limit} used today, manual runs included)")
         return
-    items.sort(key=lambda i: store.last_run_for(i.symbol) or "")   # least recently analysed first
-    items = levels.prioritise(items)                                # ...but a met watch level goes first
-    chosen = items[:limit - done]
-    store.log("info", f"scheduled {asset} run started: {', '.join(i.symbol for i in chosen)} "
+    # Triggered symbols first (met watch level, holding down or due a weekly review, new idea, big move), then
+    # watchlist symbols not analysed for a week. Unused slots stay unused (see app/automation.py).
+    from . import automation
+    try:
+        ec = client()
+        book = ec.book()
+    except Exception as e:  # noqa: BLE001
+        store.log("warn", f"scheduled {asset} run: portfolio unavailable ({e}); holdings not considered")
+        ec, book = None, None
+    picks = automation.pick(asset, limit - done, ec=ec, book=book)
+    if not picks:
+        store.log("info", f"scheduled {asset} run: nothing has changed and everything was analysed in the last "
+                          f"{automation.ROTATE_DAYS} days, so no analysis today ({done} of {limit} used)")
+        return
+    store.log("info", f"scheduled {asset} run started: {', '.join(f'{i.symbol} ({why})' for i, why in picks)} "
                       f"({done} of {limit} analyses used today)")
-    for item in chosen:
+    for item, _why in picks:
         analyse(item)
 
 
@@ -553,15 +560,14 @@ def _manual_symbols_today(since: str) -> set[str]:
 
 
 def next_in_queue() -> list[str]:
-    """Shares the next scheduled share run would pick (least recently analysed first)."""
+    """Shares the next scheduled share run would pick, as far as is known without live data (met watch
+    levels, new ideas, then symbols not analysed for a week; holdings and big moves are checked at run time)."""
+    from . import automation
     s = store.get_settings()
     items = policy.parse_watchlist(s["watchlist"])
-    shares = [i for i in items if i.asset_type != "crypto"]
-    crypto = len(items) - len(shares)
+    crypto = sum(1 for i in items if i.asset_type == "crypto")
     slots = max(0, int(float(s["analyses_per_day"] or 0)) - crypto)
-    shares.sort(key=lambda i: store.last_run_for(i.symbol) or "")
-    shares = levels.prioritise(shares)
-    return [i.symbol for i in shares[:slots]]
+    return [i.symbol for i, _ in automation.pick("stock", slots, ec=None, book=None)]
 
 
 def backfill_levels() -> list[str]:
@@ -648,7 +654,7 @@ def daily_summary() -> None:
         onlist = {i.symbol for i in policy.parse_watchlist(s["watchlist"])}
         lines += ["", "Watch levels:"] + [
             f"  {lv['ticker']}: {levels.describe(lv)} [{'MET' if lv['status'] == 'triggered' else 'watching'}]"
-            + ("" if lv["ticker"] in onlist else f" (not on watchlist, so not analysed automatically: {levels.analyse_link(lv['ticker'])})")
+            + ("" if lv["ticker"] in onlist else f" (not on watchlist; a met level is still analysed in the next scheduled run: {levels.analyse_link(lv['ticker'])})")
             for lv in watching]
     try:
         from . import autotest

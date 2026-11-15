@@ -23,6 +23,15 @@ def _yahoo(sym: str) -> str:
     return f"{base}-{cls}" if dot and base.isalpha() and cls in ("A", "B") else sym
 
 
+def entry_for(symbol: str, research: str, asset_class: str = "") -> str:
+    """Watchlist entry for an eToro symbol: crypto gets '=SYM-USD@crypto', eToro CVX.US is researched as CVX."""
+    if str(asset_class or "").lower() == "crypto":
+        return f"{symbol}={research or symbol + '-USD'}@crypto"
+    if not research and symbol.endswith(".US"):
+        research = symbol[:-3]
+    return f"{symbol}={research}" if research and research != symbol else symbol
+
+
 def parse_watchlist(text: str) -> list[WatchItem]:
     """"META, BTC=BTC-USD@crypto" -> items. '=' gives the research ticker, '@' the asset type."""
     out = []

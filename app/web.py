@@ -13,7 +13,7 @@ from apscheduler.triggers.cron import CronTrigger
 from fastapi import FastAPI, Form, HTTPException, Request
 from fastapi.responses import HTMLResponse, RedirectResponse
 
-from . import autotest, daytrader, performance, scorecard, terms, config, engine, markets, opportunities, policy, store
+from . import automation, autotest, dailytest, daytrader, performance, scorecard, terms, config, engine, markets, opportunities, policy, store
 
 sched = BackgroundScheduler(timezone=config.TZ)
 
@@ -73,6 +73,28 @@ def schedule_jobs() -> None:
                   replace_existing=True, max_instances=1)
     sched.add_job(autotest.tick, "interval", minutes=1, id="autotest", replace_existing=True,
                   max_instances=1, coalesce=True)
+    # Automation (15 Nov 2026, see app/automation.py and app/dailytest.py). Paper tests never trade.
+    sched.add_job(automation.daily_review, CronTrigger(hour=21, minute=20), id="review", replace_existing=True,
+                  max_instances=1)
+    sched.add_job(automation.weekly_scan, CronTrigger(day_of_week="sun", hour=20, minute=0), id="weekly_scan",
+                  replace_existing=True, max_instances=1)
+    sched.add_job(automation.weekly_review, CronTrigger(day_of_week="sun", hour=21, minute=0), id="weekly_review",
+                  replace_existing=True, max_instances=1)
+    sched.add_job(_safe(dailytest.run_trend, "trend"), CronTrigger(hour=0, minute=10), id="daily_trend",
+                  replace_existing=True, max_instances=1)
+    sched.add_job(_safe(dailytest.run_fund, "fund"), CronTrigger(day_of_week="mon-fri", hour=16, minute=20),
+                  id="daily_fund", replace_existing=True, max_instances=1)
+
+
+def _safe(fn, name: str):
+    def run():
+        try:
+            done = fn()
+            if done:
+                store.log("info", f"auto-test daily {name}: {', '.join(done)}")
+        except Exception as e:  # noqa: BLE001
+            store.log("error", f"auto-test daily {name} failed: {e}")
+    return run
 
 
 @asynccontextmanager
@@ -88,6 +110,8 @@ async def lifespan(_app):
     if config.SCHEDULER_ENABLED:
         schedule_jobs()
         sched.start()
+        if not autotest.last_review():                      # first start with the review: run it once now
+            threading.Thread(target=automation.daily_review, daemon=True).start()
     store.log("info", f"started ({config.ETORO_ENV.upper()} account{', DRY RUN' if config.DRY_RUN else ''}"
                       f"{'' if config.SCHEDULER_ENABLED else ', scheduler off'})")
     yield
@@ -644,8 +668,8 @@ def scorecard_page(refresh: int = 0):
     intro = (f"<p>{esc(scorecard.headline(rows))}.</p><p class=muted>Each call is measured from the price at the time "
              f"of the analysis to the close {', '.join(str(h) for h in scorecard.HORIZONS)} trading days later, and compared "
              f"with {scorecard.BENCHMARK} (Vanguard FTSE All-World) over the same dates. A Buy or Overweight <b>worked</b> "
-             "if the share beat the benchmark; an Underweight or Sell worked if it lagged it. Holds are shown but not "
-             "scored. Results need many calls before they mean much: treat anything under 20 calls as anecdote.</p>"
+             "if the share beat the benchmark; an Underweight or Sell worked if it lagged it. A Hold is scored as "
+             "<b>staying out was right</b>: it worked if the share did not beat the benchmark. Results need many calls before they mean much: treat anything under 20 calls as anecdote.</p>"
              f"<p><a class=muted href='{B}/scorecard?refresh=1'>Refresh prices</a></p>")
     body = ("<div class=layout>"
             + card("Does it work?", intro, "c12")
@@ -856,12 +880,7 @@ def watchlist_editor(s: dict, msg: str = "", error: str = "", form: dict | None 
 
 
 def _entry_for(symbol: str, research: str, inst: dict) -> str:
-    cls = str(inst.get("assetClass") or "").lower()
-    if cls == "crypto":
-        return f"{symbol}={research or symbol + '-USD'}@crypto"
-    if not research and symbol.endswith(".US"):
-        research = symbol[:-3]                                # eToro CVX.US -> Yahoo CVX
-    return f"{symbol}={research}" if research and research != symbol else symbol
+    return policy.entry_for(symbol, research, inst.get("assetClass") or "")
 
 
 @app.post("/watchlist/add", response_class=HTMLResponse)
@@ -1402,12 +1421,12 @@ function autoPost(path,body){return fetch(B+'/daytrader/autotest/'+path,{method:
   document.addEventListener('click',e=>{if(!e.target.closest('#dt-ares')&&e.target!==q)res.style.display='none';});})();
 const REASON={stop:'Stop',target:'Target','break-even':'Break-even'};
 const rx=v=>v==null?'–':(v>=0?'+':'')+v.toFixed(2)+'R';
-function autoPaint(){const el=$('dt-auto');if(!el||!auto)return;const now=Date.now()/1000,S=auto.strategies||{fast:{label:'Fast'},swing:{label:'Swing'}};
+function autoPaint(){const el=$('dt-auto');if(!el||!auto)return;const now=Date.now()/1000,S=auto.strategies||{fast:{label:'Fast'},swing:{label:'Swing'}},KS=Object.keys(S).filter(k=>!S[k].daily);
   const tbl=(head,rows)=>'<div class=tbl><table><tr>'+head.map(h=>'<th>'+h+'</th>').join('')+'</tr>'+rows.join('')+'</table></div>';
   const lab=k=>(S[k]||{label:k}).label;
   let h='';
   Object.keys(S).forEach(k=>{const T=(auto.totals||{})[k]||{trades:0,wins:0,targets:0,stops:0,gross:0,fees:0,net:0};
-    h+='<div class=dt-strat>'+lab(k)+' <span class=muted style=\"font-weight:400\">· closes at stop, target or after '+S[k].max_hours+'h</span></div>'
+    h+='<div class=dt-strat>'+lab(k)+' <span class=muted style=\"font-weight:400\">· '+(S[k].daily?S[k].rule+' (checked daily)':'closes at stop, target or after '+S[k].max_hours+'h')+'</span></div>'
       +'<div class=dt-tiles><div><span>Closed trades</span><b>'+T.trades+'</b></div>'
       +'<div><span>In profit after fees</span><b>'+(T.trades?Math.round(T.wins/T.trades*100)+'%':'–')+'</b></div>'
       +'<div><span>Target / stop / time</span><b>'+T.targets+' / '+T.stops+' / '+(T.trades-T.targets-T.stops)+'</b></div>'
@@ -1415,6 +1434,10 @@ function autoPaint(){const el=$('dt-auto');if(!el||!auto)return;const now=Date.n
       +'<div><span>Fees paid</span><b>'+money(T.fees)+'</b></div>'
       +'<div><span>Total net</span><b class=\"'+cls(T.net)+'\">'+sgn(T.net)+'</b></div>'
       +'<div><span>Total R (average)</span><b class=\"'+cls(T.total_r||0)+'\">'+(T.avg_r==null?'–':rx(T.total_r)+' ('+rx(T.avg_r)+')')+'</b></div></div>';});
+  const RV=auto.review||{},pr=r=>(S[r.strategy]||{short:r.strategy}).short+' on '+r.symbol+' ('+r.trades+' trades'+(r.avg_r==null?'':', '+rx(r.avg_r)+' avg')+', '+sgn(r.net)+')';
+  if((RV.ready||[]).length)h+='<p><b class=dt-up>Ready for a small real-money pilot (your decision):</b> '+RV.ready.map(pr).join('; ')+'</p>';
+  if((RV.promising||[]).length)h+='<p class=muted>Promising, needs more trades: '+RV.promising.map(pr).join('; ')+'</p>';
+  if((RV.retired||[]).length)h+='<p class=muted>Switched off by the daily review (losing after 20+ trades; tick it again to override for 14 days): '+RV.retired.map(pr).join('; ')+'</p>';
   el.innerHTML=h;h='';
   const inList=cur&&auto.symbols.some(x=>x.iid===cur.instrumentId);
   const sg=(st,hd)=>st?sigPill(st==='error'?'nodata':st)+'<span class=muted>'+(hd||'')+'</span>':'<span class=muted>waiting for the first check</span>';
@@ -1423,9 +1446,9 @@ function autoPaint(){const el=$('dt-auto');if(!el||!auto)return;const now=Date.n
   let lh=(cur&&!inList?'<button class=sec id=dt-aadd style=\"margin:8px 0\">Add '+cur.symbol+' (selected above)</button>':'')
     +(auto.symbols.length?auto.symbols.map(x=>'<div class=dt-arow><div class=sym><b>'+x.symbol+'</b><span>'+(x.name?x.name+' · ':'')+(KL[x.kind]||x.kind)+'</span>'
       +'<span>'+(x.last_checked?'checked '+hm(Date.parse(x.last_checked)/1000):'not checked yet')+'</span></div>'
-      +'<div class=sg>'+Object.keys(S).map(k=>{const st=k==='fast'?x.last_state:x[k+'_state'],hd=k==='fast'?x.last_headline:x[k+'_headline'];
+      +'<div class=sg>'+KS.map(k=>{const st=k==='fast'?x.last_state:x[k+'_state'],hd=k==='fast'?x.last_headline:x[k+'_headline'];
           return '<div><i>'+(S[k].short||k)+'</i>'+(on(x[k+'_on'])?sg(st,hd):'<span class=muted>off</span>')+'</div>';}).join('')+'</div>'
-      +'<div class=ctl>'+Object.keys(S).map(k=>'<label class=dt-sw><input type=checkbox data-tog=\"'+k+'\" data-iid=\"'+x.iid+'\"'+(on(x[k+'_on'])?' checked':'')+'>'+(S[k].short||k)+'</label>').join('')
+      +'<div class=ctl>'+KS.map(k=>'<label class=dt-sw><input type=checkbox data-tog=\"'+k+'\" data-iid=\"'+x.iid+'\"'+(on(x[k+'_on'])?' checked':'')+'>'+(S[k].short||k)+'</label>').join('')
       +'<button class=sec data-arm=\"'+x.iid+'\" title=\"Stop testing '+x.symbol+'\">Remove</button></div></div>').join('')
     :'<p class=muted>The test list is empty. Search above to add a symbol.</p>');
   $('dt-alist').innerHTML='<p class=muted style=\"margin:10px 0 0\">'+auto.symbols.length+' symbol'+(auto.symbols.length===1?'':'s')+' on the list</p>'+lh;

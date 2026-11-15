@@ -1359,7 +1359,7 @@ def test_daily_summary_lists_analyses_trades_outside_buys_and_queue(eng, monkeyp
     assert "#1 BUY LLY $25.00 | Overweight -> failed (400: Exactly one" in body
     assert "Bought outside the app today" in body and "LLY: 1 position(s), about $25.00" in body
     assert "META: 1 position" not in body
-    assert "Next share run: META, GOOG" in body            # never-analysed META first, then least recent
+    assert "Next share run: META\n" in body               # never-analysed META; GOOG was analysed today, so not due
 
 
 
@@ -1524,7 +1524,7 @@ def test_scorecard_returns_vs_benchmark_and_hit_rates(eng, monkeypatch):
     assert r0["start"] == pytest.approx(10.1) and r0["returns"][5] == pytest.approx((10.6 / 10.1 - 1) * 100)
     assert r0["vs"][5] == pytest.approx((10.6 / 10.1 - 1) * 100 - (100.6 / 100.1 - 1) * 100)
     assert scorecard.worked(rows[0], 20) is True and scorecard.worked(rows[1], 20) is False
-    assert scorecard.worked(rows[2], 20) is True and scorecard.worked(rows[3], 20) is None
+    assert scorecard.worked(rows[2], 20) is True and scorecard.worked(rows[3], 20) is False   # Hold: the share beat the benchmark, so staying out was wrong
     assert rows[4]["returns"] == {}                                    # pending
     g = {x["name"]: x for x in scorecard.by_rating(rows)}
     assert g["Buy"]["count"] == 2 and g["Buy"]["scored"][5] == 1 and g["Buy"]["hits"][5] == 100 and g["Buy"]["pending"][5] == 1
@@ -1887,7 +1887,8 @@ def test_autotest_opens_on_signal_and_closes_at_stop_target_or_time(eng, monkeyp
         c.executescript(autotest.CREATE)
         c.execute("INSERT OR IGNORE INTO autotest_meta(key, value) VALUES ('seeded','x')")
     autotest.add_symbol(15200, "TSLA.24-7", "cfd")
-    for k in autotest.STRATEGIES:                                # only the original fast here: the filtered
+    monkeypatch.setattr(strategy, "home_open", lambda *a, **k: True)   # as if the US market were open
+    for k in autotest.INTRADAY:                                  # only the original fast here: the filtered
         if k != "fast":                                          # versions trade in US hours, so the test
             autotest.set_enabled(15200, k, False)                # would depend on the time of day
     autotest.set_enabled(15200, "fast", False)
@@ -1980,7 +1981,7 @@ def test_watch_levels_off_the_watchlist_say_so_and_can_be_analysed(eng, monkeypa
     levels.overnight(None)
     body = mails[-1]
     assert "META" in body and "It will be analysed first in its next run" in body
-    assert "IUHC.L is not on your watchlist, so it will NOT be analysed automatically" in body and "/preflight?symbol=IUHC.L" in body
+    assert "IUHC.L is not on your watchlist, but a met level still puts it first in its next scheduled run" in body and "/preflight?symbol=IUHC.L" in body
 
     _il.reload(web)
     monkeypatch.setattr(web.sched, "start", lambda: None)
@@ -2249,3 +2250,156 @@ def test_watchlist_share_class_research_ticker():
     from app import policy
     items = {i.symbol: i.yf for i in policy.parse_watchlist("BRK.B, IGLN.L, BTC=BTC-USD@crypto, CVX.US=CVX, META")}
     assert items == {"BRK.B": "BRK-B", "IGLN.L": "IGLN.L", "BTC": "BTC-USD", "CVX.US": "CVX", "META": "META"}
+
+
+def test_review_switches_off_losers_flags_ready_and_respects_override(eng):
+    import time as _t
+    engine, store, sent, fs, rating = eng
+    from app import autotest
+    autotest.add_symbol(15785, "SKHY.24-7", "cfd")
+    autotest.add_symbol(15200, "TSLA.24-7", "cfd")
+    now = _t.time()
+
+    def trade(iid, sym, key, net, ts):
+        with store._lock, store.connect() as c:
+            c.execute("INSERT INTO autotrades(iid, symbol, kind, strategy, opened_ts, amt, entry, stop, target, status, "
+                      "closed_ts, exit, reason, gross, fees, net) VALUES (?,?,'cfd',?,?,100,100,99,102,'closed',?,0,'x',?,0,?)",
+                      (iid, sym, key, ts - 60, ts, net, net))
+    for i in range(20):                                       # 20 losers: about -0.5R each
+        trade(15785, "SKHY.24-7", "fast", -0.5, now - 3600 * i)
+    for i in range(40):                                       # 40 trades over 20 days, mostly winners
+        trade(15200, "TSLA.24-7", "fast2", 1.0 if i % 3 else -0.6, now - 86400 * i / 2)
+    rv = autotest.review(now)
+    assert [r["symbol"] for r in rv["retired"]] == ["SKHY.24-7"] and rv["retired"][0]["strategy"] == "fast"
+    on = {s["symbol"]: s for s in autotest.symbols()}
+    assert on["SKHY.24-7"]["fast_on"] == 0 and on["SKHY.24-7"]["fast2_on"] == 1
+    assert [(r["strategy"], r["symbol"]) for r in rv["ready"]] == [("fast2", "TSLA.24-7")]
+    lines = autotest.review_lines(rv)
+    assert any("READY" in x and "TSLA" in x for x in lines) and any("switched off" in x for x in lines)
+    autotest.set_enabled(15785, "fast", True)                 # Paul overrides: not switched off again for 14 days
+    autotest.review(now + 3600)
+    assert {s["symbol"]: s for s in autotest.symbols()}["SKHY.24-7"]["fast_on"] == 1
+    autotest.review(now + 15 * 86400)
+    assert {s["symbol"]: s for s in autotest.symbols()}["SKHY.24-7"]["fast_on"] == 0
+    assert autotest.summary()["review"]["at"]
+
+
+def test_fast_only_in_home_hours_and_v2us_only_skhy(eng):
+    import time as _t
+    engine, store, sent, fs, rating = eng
+    from app import autotest
+    autotest._ensure()
+    now = _t.time()
+    assert "Same as Fast v2" in autotest.blocked(15200, "fast2x", now, "TSLA.24-7", "cfd")
+    assert autotest.blocked(15785, "fast2x", now, "SKHY.24-7", "cfd") is None
+
+
+def test_daily_strategies_calendar_ibs_and_trend(eng, monkeypatch):
+    from datetime import date as _d, datetime as _dt, timezone as _tz
+    engine, store, sent, fs, rating = eng
+    from app import autotest, dailytest as dt
+    assert dt.weekdays_left(_d(2026, 11, 24)) == 4 and dt.weekdays_left(_d(2026, 11, 25)) == 3   # Nov ends Mon 30th
+    assert dt.weekday_number(_d(2026, 12, 3)) == 3
+    assert dt.tom_action(_d(2026, 11, 25), None) == "enter" and dt.tom_action(_d(2026, 11, 24), None) is None
+    held = {"opened_ts": _dt(2026, 11, 25, 16, 20, tzinfo=_tz.utc).timestamp()}
+    assert dt.tom_action(_d(2026, 12, 2), held) is None and dt.tom_action(_d(2026, 12, 3), held) == "exit"
+    assert dt.ibs({"high": 10, "low": 8, "close": 8.2}) == pytest.approx(0.1)
+
+    class C:
+        def __init__(self, closes, today_bar=None):
+            self.closes, self.today_bar, self.bid = closes, today_bar, closes[-1]
+
+        def candles(self, iid, interval, count):
+            out = [{"date": f"2026-0{1 + i // 28 % 9}-{1 + i % 28:02d}T00:00:00Z", "open": c, "high": c * 1.01,
+                    "low": c * 0.99, "close": c} for i, c in enumerate(self.closes)]
+            if self.today_bar:
+                out.append(self.today_bar)
+            return out
+
+        def live_rates(self, ids):
+            return {i: {"bid": self.bid, "ask": self.bid * 1.001} for i in ids}
+    now = _dt(2026, 11, 16, 0, 10, tzinfo=_tz.utc)
+    up = C([100 + i for i in range(120)])
+    assert sorted(dt.run_trend(up, now)) == ["BTC in", "ETH in", "SOL in"]
+    assert dt.run_trend(up, now) == []                                          # already holding
+    down = C([100 + i for i in range(110)] + [150 - 8 * i for i in range(10)])
+    assert sorted(dt.run_trend(down, now)) == ["BTC out", "ETH out", "SOL out"]
+    closed = autotest.summary()["closed"]
+    assert {t["strategy"] for t in closed} == {"trend100"} and all(t["fees"] > 1.0 for t in closed)   # 1% each way
+    day = _dt(2026, 11, 16, 16, 20, tzinfo=_tz.utc)                             # Monday
+    low_close = {"date": "2026-11-16T00:00:00Z", "open": 820, "high": 825, "low": 810, "close": 811}
+    f = C([800 + i for i in range(25)], low_close)
+    f.bid = 811
+    assert dt.run_fund(f, day) == ["IBS in"]
+    f.today_bar = {"date": "2026-11-17T00:00:00Z", "open": 811, "high": 830, "low": 810, "close": 829}
+    f.bid = 829
+    assert dt.run_fund(f, _dt(2026, 11, 17, 16, 20, tzinfo=_tz.utc)) == ["IBS out (closed in the top 20% of the day's range)"]
+    assert dt.run_fund(C([800] * 5), day) == []                                 # no candle today: holiday
+    s = autotest.summary()
+    assert "trend100" in s["totals"] and s["totals"]["ibs"]["trades"] == 1
+    assert all(k not in autotest.INTRADAY for k in ("trend100", "ibs", "tom"))
+
+
+def test_pick_triggers_then_weekly_rotation(eng, monkeypatch):
+    from datetime import datetime as _dt, timezone as _tz, timedelta as _td
+    from types import SimpleNamespace as NS
+    engine, store, sent, fs, rating = eng
+    from app import automation, levels
+    store.set_setting("watchlist", "AAA,BBB,CCC,DDD,BTC=BTC-USD@crypto")
+    now = _dt(2026, 11, 16, 15, 5, tzinfo=_tz.utc)
+    last = {"AAA": (now - _td(days=1)).isoformat(), "BBB": (now - _td(days=10)).isoformat(),
+            "CCC": (now - _td(days=2)).isoformat(), "GOOG": (now - _td(days=9)).isoformat()}
+    monkeypatch.setattr(store, "last_run_for", lambda s: last.get(s))
+    monkeypatch.setattr(levels, "triggered_tickers", lambda: ["CCC", "IUHC.L"])
+
+    class EC:
+        def find_instrument(self, sym):
+            return {"instrumentId": 1, "assetClass": "ETF" if sym.endswith(".L") else "Stocks"}
+
+        def candles(self, iid, interval, count):
+            return [{"close": 100.0}, {"close": 100.0}]
+    book = NS(holdings={5: NS(symbol="GOOG", units=1, value_usd=52.0, cost_usd=63.2, pending_usd=0)})
+    picks = automation.pick("stock", 5, ec=EC(), book=book, now=now)
+    got = [(i.symbol, why) for i, why in picks]
+    assert got[:2] == [("CCC", "watch level met"), ("IUHC.L", "watch level met")]
+    assert ("GOOG", "holding 18% below cost") in got and ("DDD", "new on the watchlist") in got
+    assert ("BBB", "not analysed for 7+ days") in got and "AAA" not in dict(got)      # AAA analysed yesterday
+    assert len(automation.pick("stock", 2, ec=EC(), book=book, now=now)) == 2
+    assert [i.symbol for i, _ in automation.pick("crypto", 5, now=now)] == ["BTC"]     # never analysed
+    assert engine.next_in_queue()[:1] == ["CCC"]                                        # no live lookups
+
+
+def test_weekly_scan_adds_ideas_and_expiry_removes_unheld(eng, monkeypatch):
+    from datetime import datetime as _dt, timezone as _tz, timedelta as _td
+    from types import SimpleNamespace as NS
+    engine, store, sent, fs, rating = eng
+    from app import automation, opportunities, policy, terms
+    store.set_setting("watchlist", "META")
+    monkeypatch.setattr(opportunities, "can_scan", lambda: None)
+    items = [{"symbol": s, "etoro": {"found": s != "NOPE"}} for s in ("META", "NOPE", "XYZ", "ABC", "DEF", "GHI")]
+    monkeypatch.setattr(opportunities, "scan", lambda h: {"id": 9, "items": items})
+    res = automation.weekly_scan()
+    assert res["added"] == ["XYZ", "ABC", "DEF"]
+    wl = [i.symbol for i in policy.parse_watchlist(store.get_settings()["watchlist"])]
+    assert wl == ["META", "XYZ", "ABC", "DEF"] and terms.term("XYZ") == terms.SHORT
+    later = _dt.now(_tz.utc) + _td(days=15)
+    book = NS(holdings={1: NS(symbol="ABC", units=1, pending_usd=0)})
+    assert sorted(automation.expire_ideas(book, later)) == ["DEF", "XYZ"]
+    wl = [i.symbol for i in policy.parse_watchlist(store.get_settings()["watchlist"])]
+    assert wl == ["META", "ABC"] and terms.term("XYZ") != terms.SHORT
+    assert automation.expire_ideas(book, later) == []                                   # META was never auto-added
+
+
+def test_weekly_review_lines(eng):
+    engine, store, sent, fs, rating = eng
+    from app import automation
+    lines = automation.weekly_lines()
+    text = "\n".join(lines)
+    assert "Strategy league table" in text and "Analyses this week" in text and "Trend 100d" in text
+
+
+def test_scorecard_scores_holds():
+    from app import scorecard
+    rows = [{"rating": "Hold", "vs": {5: -2.0}, "returns": {5: 1.0}}, {"rating": "Hold", "vs": {5: 3.0}, "returns": {5: 4.0}}]
+    assert scorecard.worked(rows[0], 5) is True and scorecard.worked(rows[1], 5) is False
+    assert "staying out was right 50%" in scorecard.headline(rows)

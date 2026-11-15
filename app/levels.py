@@ -246,8 +246,8 @@ def overnight(ec) -> dict:
         if on_watchlist(ticker):
             lines.append(f"MET  {ticker}: {describe(lv)}: {info}. It will be analysed first in its next run.")
         else:
-            lines.append(f"MET  {ticker}: {describe(lv)}: {info}. {ticker} is not on your watchlist, so it will NOT be "
-                         f"analysed automatically. Analyse it now: {analyse_link(ticker)}")
+            lines.append(f"MET  {ticker}: {describe(lv)}: {info}. {ticker} is not on your watchlist, but a met level "
+                         f"still puts it first in its next scheduled run. Or analyse it now: {analyse_link(ticker)}")
     for ticker, lv, info in changed["cancelled"]:
         lines.append(f"CANCELLED  {ticker}: {describe(lv)}: {info}.")
     for ticker, lv in changed["expired"]:

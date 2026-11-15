@@ -27,6 +27,7 @@ DEFAULTS = {
     "deep_model": "claude-sonnet-5",     # 2 deciding agents (Research Manager, Portfolio Manager)
     "opp_model": "claude-sonnet-5",      # Opportunities web-search scan
     "daily_reset_at": "",
+    "auto_ideas": "{}",              # watchlist ideas added by the weekly scan: {"XYZ": {"since": iso, "scan": id}}
     "watch_meta": "{}",              # per-symbol holding period, e.g. {"NVDA": {"term": "short", ...}}
     "live_limits_applied": "",
     "watchlist_fix_applied": "",

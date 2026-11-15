@@ -2,8 +2,9 @@
 
 For every finished analysis, the price at the time of the call is compared with the close 5, 20 and 60 trading
 days later, and with a benchmark (Vanguard FTSE All-World, VWRL.L) over the same dates. A Buy or Overweight
-"worked" if the share then beat the benchmark; an Underweight or Sell worked if it lagged it. Holds are shown for
-reference but not scored. Results are grouped by rating, by AI models and by symbol.
+"worked" if the share then beat the benchmark; an Underweight or Sell worked if it lagged it. Since 15 Nov 2026 a
+Hold is scored too, as "staying out was right": it worked if the share did not beat the benchmark (nearly every Hold
+here was a decision not to buy), so we can see whether the agents' caution saves money or misses gains. Results are grouped by rating, by AI models and by symbol.
 
 Read-only: uses eToro daily candles, cached for a few hours. Nothing here trades.
 """
@@ -113,6 +114,8 @@ def worked(row: dict, h: int) -> bool | None:
         return v > 0
     if r in BEAR:
         return v < 0
+    if r == "hold":
+        return v <= 0                                  # staying out was right if the share did not beat the benchmark
     return None
 
 
@@ -152,14 +155,31 @@ def by_ticker(rows):
     return sorted(summarise(rows, lambda r: r["ticker"]), key=lambda g: -g["count"])
 
 
+def hold_line(rows: list[dict]) -> str | None:
+    """How the Hold calls (staying out) did, at the shortest horizon with results."""
+    holds = [r for r in rows if r["rating"].lower() == "hold"]
+    for h in HORIZONS:
+        scored = [r for r in holds if h in r["vs"]]
+        if scored:
+            avg = sum(r["vs"][h] for r in scored) / len(scored)
+            right = sum(1 for r in scored if r["vs"][h] <= 0) / len(scored) * 100
+            return (f"Hold calls after {h} trading days: the shares did {avg:+.1f}% vs {BENCHMARK} on average; staying "
+                    f"out was right {right:.0f}% of the time ({len(scored)} call{'s' if len(scored) != 1 else ''})")
+    return None
+
+
 def headline(rows: list[dict]) -> str:
     """One line for the daily summary."""
     bull = [r for r in rows if r["rating"].lower() in BULL]
+    hold = hold_line(rows)
     for h in HORIZONS:
         scored = [r for r in bull if h in r["vs"]]
         if scored:
             avg = sum(r["vs"][h] for r in scored) / len(scored)
             hits = sum(1 for r in scored if r["vs"][h] > 0) / len(scored) * 100
             return (f"Buy/Overweight calls after {h} trading days: {avg:+.1f}% vs {BENCHMARK} on average, "
-                    f"{hits:.0f}% beat it ({len(scored)} call{'s' if len(scored) != 1 else ''})")
+                    f"{hits:.0f}% beat it ({len(scored)} call{'s' if len(scored) != 1 else ''})"
+                    + (f". {hold}" if hold else ""))
+    if hold:
+        return hold
     return f"Not enough history yet: the first {HORIZONS[0]}-day results appear {HORIZONS[0]} trading days after a call"

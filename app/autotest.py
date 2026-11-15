@@ -37,7 +37,26 @@ STRATEGIES = {"fast": {"label": "Fast (5-min trend)", "short": "Fast", "max_hour
               # Swing: not on crypto or commission shares (its 2% / $2 costs turned stops into $4-5 losses),
               # and one trade at a time per group of symbols that move together (see strategy.GROUPS).
               "swing": {"label": "Swing (1-hour trend)", "short": "Swing", "max_hours": 48.0,
-                        "skip_kinds": ("crypto", "stock"), "one_per_group": True}}
+                        "skip_kinds": ("crypto", "stock"), "one_per_group": True},
+              # Daily strategies (app/dailytest.py): checked once a day on their own fixed symbols, not per minute.
+              "trend100": {"label": "Crypto trend (daily close vs 100-day average)", "short": "Trend 100d", "daily": True,
+                           "rule": "holds BTC, ETH or SOL while the daily close is above its 100-day average"},
+              "ibs": {"label": "IBS (buy a close near the day's low, S&P 500 fund)", "short": "IBS", "daily": True,
+                      "rule": "buys CSPX.L near the close when it closes in the bottom 20% of the day's range, "
+                              "sells on a close in the top 20%, above the previous high, or after 5 days"},
+              "tom": {"label": "Turn of the month (S&P 500 fund)", "short": "Turn of month", "daily": True,
+                      "rule": "buys CSPX.L near the close 4 weekdays before month end, sells near the close on "
+                              "the 3rd weekday of the new month"}}
+INTRADAY = [k for k, v in STRATEGIES.items() if not v.get("daily")]
+DAILY = [k for k, v in STRATEGIES.items() if v.get("daily")]
+
+# Automatic review (once a day): a strategy/symbol pair is switched off when it has at least RETIRE_MIN closed
+# trades averaging below RETIRE_R, and flagged "ready" for a small real-money pilot only when it has at least
+# READY_MIN trades over READY_DAYS days with a profit factor above READY_PF and an average above READY_R.
+# Switching a pair back on by hand stops the review switching it off again for OVERRIDE_DAYS days.
+RETIRE_MIN, RETIRE_R = 20, -0.10
+READY_MIN, READY_DAYS, READY_PF, READY_R = 40, 14, 1.3, 0.15
+OVERRIDE_DAYS = 14
 MAX_HOURS = STRATEGIES["fast"]["max_hours"]
 SEED = [(100000, "BTC", "crypto"), (100063, "SOL", "crypto"), (100340, "SUI", "crypto"),
         (100085, "AVAX", "crypto"), (15200, "TSLA.24-7", "cfd"), (15574, "NVDA.24-7", "cfd")]
@@ -144,21 +163,25 @@ def add_symbol(iid: int, symbol: str | None = None, kind: str | None = None, nam
     return {"iid": int(iid), "symbol": symbol, "kind": kind, "name": name}
 
 
-def set_enabled(iid: int, key: str, on: bool) -> None:
+def set_enabled(iid: int, key: str, on: bool, by_user: bool = True) -> None:
     """Switch one strategy on or off for a symbol. Switching off stops new trades; a trade already
-    open carries on to its stop, target or time limit."""
-    if key not in STRATEGIES:
+    open carries on to its stop, target or time limit. Switching on by hand overrides the automatic
+    review for OVERRIDE_DAYS days."""
+    if key not in INTRADAY:
         raise ValueError(f"unknown strategy {key}")
     _ensure()
     with store._lock, store.connect() as c:
         c.execute(f"UPDATE autotest_symbols SET {key}_on=? WHERE iid=?", (1 if on else 0, int(iid)))
+        if by_user:
+            c.execute("INSERT OR REPLACE INTO autotest_meta(key, value) VALUES (?, ?)",
+                      (f"override:{key}:{int(iid)}", str(time.time()) if on else "0"))
     store.log("info", f"auto-test: {key} {'on' if on else 'off'} for instrument {iid}")
 
 
 def remove_symbol(iid: int) -> None:
     """Stop testing a symbol. Open trades in it are closed at the last checked price."""
     _ensure()
-    for key in STRATEGIES:
+    for key in INTRADAY:
         t = _open_trade(iid, key)
         if t:
             _close(t, t["last_bid"] or t["bid0"], "symbol removed", time.time())
@@ -226,8 +249,11 @@ def risk_usd(t: dict) -> float:
 
 def r_stats(t: dict) -> dict:
     """R-multiple (net / initial risk) and best move in R, for a trade dict with net and mfe."""
+    out = {"risk": None, "r": None, "mfe_r": None}
+    if not t.get("stop") or not t.get("entry"):
+        return out                                          # daily strategies have no fixed stop
     risk, per = risk_usd(t), t["entry"] - t["stop"]
-    out = {"risk": risk, "r": None, "mfe_r": None}
+    out["risk"] = risk
     if risk > 0 and t.get("net") is not None:
         out["r"] = t["net"] / risk
     if per > 0 and t.get("mfe"):
@@ -281,6 +307,8 @@ def blocked(iid: int, key: str, now: float, symbol: str | None = None, kind: str
     already holding a trade in a symbol of the same group, cooling off after a stop, or paused for the day
     after too many stops. Only strategies that set these limits are affected."""
     cfg = STRATEGIES[key]
+    if symbol and cfg.get("only") and symbol.upper().split(".")[0] not in cfg["only"]:
+        return f"Same as Fast v2 here: {cfg['short']} only differs for {', '.join(cfg['only'])}."
     if kind and kind in cfg.get("skip_kinds", ()):
         return f"{cfg['short']} is not run here: {KIND_WHY.get(kind, 'the costs')} turned its stops into big losses."
     g = strategy.group(symbol) if (symbol and cfg.get("one_per_group")) else None
@@ -323,6 +351,12 @@ def _tick_one(s: dict, r: dict | None, now: float) -> None:
     bars1 = _bars(iid)
     hurdle = hurdle_pct(kind, sym, ask, bid) if bid else strategy.default_hurdle(kind)
     sigs = {"fast": strategy.evaluate(bars1, bid, ask, is_open, hurdle)}
+    if kind == "cfd" and not strategy.home_open(sym, datetime.fromtimestamp(now, timezone.utc)):
+        # 15 Nov 2026: Fast lost about $4.30 on ~22 weekend trades on thin 24/7 prices. Like v2/v3, it now
+        # trades 24/7 CFDs only while their home market is open.
+        tz, start, end, name = strategy.home_market(sym)
+        sigs["fast"] = {**sigs["fast"], "state": "closed",
+                        "headline": f"{name} market closed: no trades on 24/7 weekend or overnight prices."}
     try:
         bars_h = _bars(iid, "OneHour")
         sigs["swing"] = strategy.evaluate_swing(_bars(iid, "FifteenMinutes"), bars_h, bid, ask, is_open, hurdle)
@@ -335,7 +369,7 @@ def _tick_one(s: dict, r: dict | None, now: float) -> None:
     except Exception as e:  # noqa: BLE001
         for k in ("swing", "fast2", "fast3", "fast2x"):
             sigs.setdefault(k, {"state": "error", "headline": str(e)[:200]})
-    for key in STRATEGIES:                                  # show cooling-off / paused on the page
+    for key in INTRADAY:                                    # show cooling-off / paused on the page
         why = blocked(iid, key, now, sym, kind)
         if why and not _open_trade(iid, key):
             sigs[key] = {**sigs[key], "state": "paused", "headline": why, "blocked": True}
@@ -346,7 +380,8 @@ def _tick_one(s: dict, r: dict | None, now: float) -> None:
                   (sigs["fast"]["state"], sigs["fast"]["headline"], sigs["swing"]["state"], sigs["swing"]["headline"],
                    sigs["fast2"]["state"], sigs["fast2"]["headline"], sigs["fast3"]["state"], sigs["fast3"]["headline"],
                    sigs["fast2x"]["state"], sigs["fast2x"]["headline"], _now_iso(now), bid, iid))
-    for key, cfg in STRATEGIES.items():
+    for key in INTRADAY:
+        cfg = STRATEGIES[key]
         t = _open_trade(iid, key)
         ex = None
         if t:
@@ -410,7 +445,7 @@ def summary(limit: int = 50) -> dict:
                        key=lambda b: (b["strategy"], -b["trades"]))
     totals = {key: _stats([t for t in allc if t["strategy"] == key]) for key in STRATEGIES}
     return {"symbols": symbols(), "open": open_, "closed": closed, "by_symbol": by_symbol, "totals": totals,
-            "total": _stats(allc), "strategies": STRATEGIES, "amt": AMT}
+            "total": _stats(allc), "strategies": STRATEGIES, "amt": AMT, "review": last_review()}
 
 
 def digest(since_ts: float) -> list[str]:
@@ -429,6 +464,7 @@ def digest(since_ts: float) -> list[str]:
         out.append(f"  open: {t['symbol']} ({t['strategy']}) since {_local_hm(t['opened_ts'])}, net if closed now ${net}")
     for b in s["by_symbol"]:
         out.append(f"  {b['symbol']} ({b['strategy']}): {b['trades']} trades, {b['wins']} in profit, net ${b['net']:+.2f}")
+    out += review_lines(s["review"])
     sig = [f"{x['symbol']} fast {x.get('last_state') or '-'} / v2 {x.get('fast2_state') or '-'} / v3 {x.get('fast3_state') or '-'} "
            f"/ swing {x.get('swing_state') or '-'}"
            for x in s["symbols"]]
@@ -464,7 +500,8 @@ def chart(iid: int, now: float | None = None) -> dict:
         rows = [dict(r) for r in c.execute(
             "SELECT id, COALESCE(strategy,'fast') AS strategy, status, opened_ts, entry, stop, target, closed_ts, exit, "
             "reason, last_bid, kind, symbol, amt FROM autotrades WHERE iid=? AND (status='open' OR closed_ts >= ?) "
-            "ORDER BY opened_ts", (int(iid), now - PAD))]
+            f"AND COALESCE(strategy,'fast') NOT IN ({','.join('?' * len(DAILY))}) "
+            "ORDER BY opened_ts", (int(iid), now - PAD, *DAILY))]
         srow = c.execute("SELECT symbol, kind, last_bid FROM autotest_symbols WHERE iid=?", (int(iid),)).fetchone()
     for t in rows:
         bid = t["exit"] if t["status"] == "closed" else t["last_bid"]
@@ -483,3 +520,97 @@ def chart(iid: int, now: float | None = None) -> dict:
     return {"iid": int(iid), "symbol": srow["symbol"] if srow else f"#{iid}", "mode": mode, "t0": t0, "t1": now,
             "interval": name, "step": step, "candles": candles, "trades": rows,
             "last_bid": srow["last_bid"] if srow else None}
+
+
+# --- automatic review: switch off losing pairs, flag promising ones -----------------------------
+def _pair_stats(rows: list[dict]) -> dict:
+    st = _stats(rows)
+    wins = sum(t["net"] for t in rows if t["net"] > 0)
+    losses = -sum(t["net"] for t in rows if t["net"] < 0)
+    st["pf"] = min(99.0, wins / losses) if losses > 0 else (99.0 if wins > 0 else None)   # 99 = no losses
+    ts = [t["closed_ts"] for t in rows if t.get("closed_ts")]
+    st["days"] = (max(ts) - min(ts)) / 86400 if ts else 0
+    return st
+
+
+def _meta_get(c, key: str, default: str = "") -> str:
+    r = c.execute("SELECT value FROM autotest_meta WHERE key=?", (key,)).fetchone()
+    return r["value"] if r else default
+
+
+def review(now: float | None = None) -> dict:
+    """Once a day: switch off strategy/symbol pairs that keep losing and flag ones good enough for a
+    small real-money pilot. Paper only: nothing here ever places an order."""
+    _ensure()
+    now = now or time.time()
+    with store._lock, store.connect() as c:
+        rows = [dict(r) for r in c.execute(
+            "SELECT iid, symbol, kind, amt, entry, stop, mfe, COALESCE(strategy,'fast') AS strategy, net, fees, gross, "
+            "reason, closed_ts FROM autotrades WHERE status='closed'")]
+    for t in rows:
+        t.update(r_stats(t))
+    syms = {s["iid"]: s for s in symbols()}
+    by: dict = {}
+    for t in rows:
+        if t["strategy"] in INTRADAY:
+            by.setdefault((t["strategy"], t["iid"]), []).append(t)
+    retired, ready, watching = [], [], []
+    for (key, iid), ts in sorted(by.items()):
+        st = _pair_stats(ts)
+        sym = ts[0]["symbol"]
+        line = {"strategy": key, "iid": iid, "symbol": sym, "trades": st["trades"], "avg_r": st["avg_r"],
+                "net": st["net"], "pf": st["pf"], "days": st["days"]}
+        s = syms.get(iid)
+        on = s is not None and s.get(f"{key}_on", 1) not in (0, "0")
+        if st["avg_r"] is not None and st["trades"] >= RETIRE_MIN and st["avg_r"] < RETIRE_R:
+            with store._lock, store.connect() as c:
+                ov = float(_meta_get(c, f"override:{key}:{iid}", "0") or 0)
+            if on and now - ov > OVERRIDE_DAYS * 86400:
+                set_enabled(iid, key, False, by_user=False)
+                store.log("info", f"auto-test review: switched off {STRATEGIES[key]['short']} on {sym} "
+                                  f"({st['trades']} trades, average {st['avg_r']:+.2f}R, net ${st['net']:+.2f})")
+                line["new"] = True
+            if not on or line.get("new"):
+                retired.append(line)
+            continue
+        if (st["trades"] >= READY_MIN and st["days"] >= READY_DAYS and st["pf"] is not None and st["pf"] > READY_PF
+                and st["avg_r"] is not None and st["avg_r"] > READY_R):
+            ready.append(line)
+        elif st["trades"] >= 10 and (st["avg_r"] or 0) > 0:
+            watching.append(line)
+    out = {"at": _now_iso(now), "retired": retired, "ready": ready, "promising": watching}
+    with store._lock, store.connect() as c:
+        c.execute("INSERT OR REPLACE INTO autotest_meta(key, value) VALUES ('review', ?)", (json.dumps(out),))
+    if ready:
+        store.log("info", "auto-test review: ready for a real-money pilot: "
+                          + ", ".join(f"{STRATEGIES[r['strategy']]['short']} on {r['symbol']}" for r in ready))
+    return out
+
+
+def last_review() -> dict:
+    _ensure()
+    with store._lock, store.connect() as c:
+        raw = _meta_get(c, "review", "")
+    try:
+        return json.loads(raw) if raw else {}
+    except ValueError:
+        return {}
+
+
+def _pair(r: dict) -> str:
+    pf = "" if r.get("pf") is None else (", no losing trades" if r["pf"] >= 99 else f", profit factor {r['pf']:.2f}")
+    avg = "" if r.get("avg_r") is None else f", average {r['avg_r']:+.2f}R"
+    return f"{STRATEGIES[r['strategy']]['short']} on {r['symbol']} ({r['trades']} trades{avg}, net ${r['net']:+.2f}{pf})"
+
+
+def review_lines(rv: dict) -> list[str]:
+    if not rv:
+        return []
+    out = []
+    if rv.get("ready"):
+        out.append("  READY for a small real-money pilot (your decision): " + "; ".join(_pair(r) for r in rv["ready"]))
+    if rv.get("promising"):
+        out.append("  promising, needs more trades: " + "; ".join(_pair(r) for r in rv["promising"]))
+    if rv.get("retired"):
+        out.append("  switched off by the review: " + "; ".join(_pair(r) for r in rv["retired"]))
+    return out

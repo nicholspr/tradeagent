@@ -114,7 +114,14 @@ Every add and delete is logged. The other settings below are saved separately an
 | Share run time | 15:05 | 15:05 | UK time, weekdays. Just after the US open (14:30 UK); London is open until 16:30. |
 | Crypto run time | 09:05 | 09:05 | UK time, every day, for `@crypto` entries. |
 
-**How shares are chosen for the 15:05 run:** first, any share whose watch level was met overnight. Then the **least recently analysed** shares, with never-analysed shares first in watchlist order, until the day's slots are used.
+**How symbols are chosen for a scheduled run (since 15 Nov 2026, "analyse when something has changed"):** the same rules apply to the 09:05 crypto run and the 15:05 share run, in this order, until the day's slots are used:
+1. a **met watch level**, whether or not the symbol is still on the watchlist (e.g. IUHC.L);
+2. a **holding** that is **10% or more below its cost**, or that **hasn't been analysed for 7 days**, including holdings that aren't on the watchlist (e.g. GOOG);
+3. a watchlist symbol **never analysed** (a new idea);
+4. a watchlist symbol that **moved 5% or more** on the last day;
+5. otherwise, watchlist symbols **not analysed for 7 days**, least recent first.
+
+Slots with nothing to do are **left unused**: on a quiet day fewer analyses run, saving API cost on repeated Holds (between 11 and 15 Nov all of about 20 analyses were Hold). The log line for each run says why each symbol was picked. A manual **Run now** still works for anything at any time.
 
 ### Trading limits
 
@@ -169,12 +176,17 @@ All times are UK time (`TZ=Europe/London`).
 | Time | Job |
 | --- | --- |
 | 06:30 daily | **Watch levels check** against the previous day's completed close. |
-| 09:05 daily | **Crypto analyses** (`@crypto` entries). |
-| 15:05 weekdays | **Share analyses:** met watch levels first, then least recently analysed. |
+| 00:10 daily | **Daily crypto trend test** (paper): BTC, ETH and SOL against their 100-day average. |
+| 09:05 daily | **Crypto analyses**, chosen by trigger (see Schedule above). |
+| 15:05 weekdays | **Share analyses**, chosen by trigger: met watch levels, holdings down 10% or due a weekly review, new ideas, big moves, then anything not analysed for 7 days. |
+| 16:20 weekdays | **Daily fund tests** (paper): IBS and turn of the month on CSPX.L, near the London close. |
 | Every 5 min | **Queue:** places approved trades whose market has opened, and expires stale approvals (after Approval expiry; approved-but-queued trades after 24 hours). |
 | Every 15 min | **Watchlist prices** refreshed from eToro, for open markets only. |
 | Every minute | **Strategy auto-test:** checks each symbol on the auto-test list against the Fast, Fast v2, Fast v3, Fast v2 + US hours and Swing strategies, opening and closing $100 paper trades (see the Day trader page). Never trades. |
+| 21:20 daily | **Strategy review:** switches off losing auto-test pairs and flags promising ones; then removes expired opportunity ideas from the watchlist. |
 | 21:30 daily | **Daily summary** email. |
+| 20:00 Sundays | **Weekly Opportunities scan** (short term); up to 3 new ideas go on the watchlist for 14 days. |
+| 21:00 Sundays | **Weekly review** email. |
 
 You can also run an analysis of any watchlist entry at any time from the Overview page, or of a symbol that's off the watchlist but still has an active watch level (its **Analyse now** link). It counts towards Analyses per day.
 
@@ -195,8 +207,8 @@ Reports often say "wait for X" rather than "buy now", for example *"buy on a dai
    - the **Watch levels** card on the Overview page: symbol, condition, status, last close, expiry and the report it came from;
    - a **"Watch levels" email** when a condition is met or cancelled;
    - a section in the daily summary.
-5. **Symbols no longer on the watchlist.** Their conditions are still checked every morning, but scheduled runs only cover watchlist symbols, so a met condition can't move them anywhere. Instead:
-   - the "Watch levels" email says the symbol **will NOT be analysed automatically** and links to its check page;
+5. **Symbols no longer on the watchlist.** Their conditions are still checked every morning, and since 15 Nov 2026 a **met** condition puts them first in the next scheduled run too, like a watchlist symbol. Also:
+   - the "Watch levels" email says so and links to its check page;
    - the Overview card marks it **Not on watchlist** with an **Analyse now** link, and the daily summary labels it the same way;
    - **Analyse now** opens the usual "can a trade happen now?" check, then runs a **one-off analysis** (nothing runs from the link itself). Add the symbol back on Settings to include it in scheduled runs again.
 6. **Backfill.** The **Read conditions from latest reports** button on the card fills in symbols that have no conditions, from their most recent report (up to 7 days old), without running a new analysis. This also ran once automatically when the feature was installed.
@@ -238,6 +250,7 @@ The top menu has **Overview, Opportunities, Scorecard, Logs and Settings**. The 
 - **Checking the ideas:** every idea must cite a source that the search actually returned, and each one is checked against eToro (found, tradable, price).
 - **Adding to the watchlist:** **Watch** adds an idea to the watchlist in the right format.
 - **Limits:** at most **3 scans a day**. The page never places or queues a trade.
+- **Weekly automatic scan** (since 15 Nov 2026): every Sunday at 20:00 a **short-term** scan runs by itself. Up to **3** ideas found on eToro and not already on the watchlist are added, as short-term ideas, while the watchlist has fewer than 15 symbols. Each stays for **14 days**; after that it is removed again unless you hold it. Symbols you added yourself are never removed. On the watchlist they are analysed like any other symbol (never-analysed ones go first), and any trade still goes through all your limits and approval rules. The ideas on trial are listed in the weekly review.
 
 ### Day trader (test)
 A first step towards intraday tools. Search for any eToro instrument by symbol or name to see its live price, then open paper trades in it. Charts are in the auto-test grid further down the page.
@@ -266,8 +279,16 @@ A first step towards intraday tools. Search for any eToro instrument by symbol o
     - **cooling off:** no new trade in a symbol for 30 minutes after a stop-out, and none for the rest of the day (London time) after two stop-outs ("Paused").
     - **spread cap** (added 9 Nov 2026): no trade when the spread is more than 15% of the stop distance ("Spread too wide"). In the first 48 trades, those with the spread above 20% of the stop lost about 3.7 times as much as they made.
   - **Fast v3** (added 9 Nov 2026): Fast v2 with a nearer **1.5:1 target**, and the stop moved up to the entry price (**break-even**) once a candle's high has reached 1× the risk in profit, from the next candle on. Added because in the first 48 trades stops were hit twice as often as 2:1 targets, while trades left to the time limit mostly made money.
-  - **Fast v2 + US hours** (added 11 Nov 2026, short name "v2+US"): Fast v2 exactly, except that SK hynix 24/7 may also trade in US market hours (09:30–16:00 New York, weekdays), not only in Seoul hours. On 11 Nov SK hynix rose another 4% in US hours with the US chip stocks, which Fast v2 skips. It starts switched on only for SK hynix (elsewhere it would just repeat Fast v2), so the two can be compared.
-  - **Fast** is left unchanged as the baseline, so the others can be compared with it.
+  - **Fast v2 + US hours** (added 11 Nov 2026, short name "v2+US"): Fast v2 exactly, except that SK hynix 24/7 may also trade in US market hours (09:30–16:00 New York, weekdays), not only in Seoul hours. On 11 Nov SK hynix rose another 4% in US hours with the US chip stocks, which Fast v2 skips. It starts switched on only for SK hynix and, since 15 Nov, never trades anything else even if its switch is on ("Same as Fast v2 here"), so the two can be compared.
+  - **Fast** is the unfiltered baseline, so the others can be compared with it. Since 15 Nov 2026 it too trades the 24/7 CFDs only while their home market is open: on the weekend of 14–15 Nov it lost about $4.30 on ~22 trades on thin weekend prices.
+  - **Daily strategies** (added 15 Nov 2026, `app/dailytest.py`), slower ideas with better published evidence and few trades, so fees matter less. They have their own fixed symbols and no switches; their results appear with the others:
+    - **Trend 100d:** holds BTC, ETH or SOL while the last completed daily close is above its 100-day average, and sells when it closes below. Checked at 00:10 UK time. Crypto's 2% round trip is charged.
+    - **IBS** (Internal Bar Strength) on **CSPX.L** (iShares Core S&P 500 UCITS): at 16:20 UK on weekdays, near the London close, buys if the day closed in the bottom 20% of its range; sells on a close in the top 20%, a close above the previous day's high, or after 5 weekdays.
+    - **Turn of month** on CSPX.L: buys near the close 4 weekdays before month end and sells near the close on the 3rd weekday of the new month (weekdays stand in for trading days; on a UK holiday nothing happens because there is no candle).
+  - **Daily strategy review** (added 15 Nov 2026, every evening at 21:20, and once straight after the update):
+    - a strategy/symbol pair with **20 or more** closed trades averaging worse than **−0.1R** is **switched off** automatically and listed as "Switched off by the daily review". Ticking it back on yourself stops the review switching it off again for **14 days**;
+    - a pair with **40 or more** trades over at least **14 days**, a **profit factor above 1.3** and an average above **+0.15R** is flagged **"Ready for a small real-money pilot (your decision)"** on the card, in the daily summary and in the weekly review. Nothing goes live by itself: a pilot would be a separate change you ask for, with its own small limits;
+    - pairs with 10 or more trades and a positive average are listed as "promising".
   - **Swing:** the same rules on a 1-hour trend with 15-minute timing, so stops and targets come out several times wider (typically 3–6% to target), enough to clear crypto's 2% round trip; trades close at stop, target or after **48 hours**. Since 9 Nov 2026 its stop and target are measured from the ask actually paid (as Fast v2), not the bid, and it has the same spread cap; before that the spread came off the target and was added to the risk, so on wide-spread CFDs the target could end up nearer than the stop. Two limits added 11 Nov 2026:
     - **not on crypto or commission shares:** Swing opens no new trades where costs are charged on top of the spread (crypto's 2% round trip, the $1-a-side share commission). Its losses there were $4–5 each (HUM, MU, AAVE, AVAX); it carries on for the 24/7 CFDs, indices and ETFs.
     - **one trade per group:** symbols that move together (the chip group: SK hynix, the Semiconductors index, MU, Nvidia, AMD, TSMC, Broadcom, ASML, Intel, Qualcomm, Arm, SOXL, SMH) hold only one Swing trade at a time, shown as "Already holding a Swing trade in …". On 10 Nov four chip Swing trades hit their stops in the same minute: four trades, but really one bet.
@@ -284,7 +305,7 @@ A first step towards intraday tools. Search for any eToro instrument by symbol o
 
 ### Scorecard: does it work?
 - **What it measures:** every finished analysis, from the price at the time of the call to the close **5, 20 and 60 trading days** later. Each result is compared with **VWRL.L** (Vanguard FTSE All-World) over the same dates.
-- **What counts as worked:** a Buy or Overweight **worked** if the share then beat the benchmark; an Underweight or Sell worked if it lagged it. Holds are shown but not scored.
+- **What counts as worked:** a Buy or Overweight **worked** if the share then beat the benchmark; an Underweight or Sell worked if it lagged it. Since 15 Nov 2026 a **Hold** is scored as **"staying out was right"**: it worked if the share did not beat the benchmark. Almost every Hold here is a decision not to buy, so this shows whether the agents' caution saves money or misses gains. The headline in the daily summary includes a line for Holds.
 - **Tables:**
   - **by rating:** whether Buy calls really beat Holds;
   - **by AI models**, evidence agents / deciding agents: whether Haiku performs as well as Sonnet;
@@ -318,6 +339,7 @@ Email is sent through Gmail and SMS through Twilio. Both are optional.
 | Analysis failed | | ✓ |
 | Watch level met or cancelled | | ✓ |
 | Daily summary (21:30, every day) | | ✓ |
+| Weekly review (Sundays 21:00) | | ✓ |
 
 **The daily summary contains:**
 1. **Portfolio performance today:**
@@ -331,12 +353,14 @@ Email is sent through Gmail and SMS through Twilio. Both are optional.
 3. **Trades proposed by the app**, with their outcome and the reason for any failure or block.
 4. **Bought outside the app today:** positions opened in the eToro app or website.
 5. **Watch levels** and their status; symbols not on the watchlist are labelled as such, with a link to analyse them.
-6. **Strategy auto-test:** for each strategy (Fast, Fast v2, Fast v3, Fast v2 + US hours, Swing), trades closed today and all-time, % in profit after fees and net; open auto-test trades; results by symbol; each tested symbol's current signals.
-7. **Scorecard headline:** how Buy and Overweight calls have done against VWRL.L so far.
+6. **Strategy auto-test:** for each strategy (the intraday ones and the daily ones), trades closed today and all-time, % in profit after fees and net; open auto-test trades; results by symbol; the latest strategy review (ready for a pilot, promising, switched off); each tested symbol's current signals.
+7. **Scorecard headline:** how Buy and Overweight calls have done against VWRL.L so far, and how often staying out (Hold) was right.
 8. **Next share run:** the shares lined up for the next 15:05.
 9. **Mode and kill switch.**
 
 Each evening's totals are saved, so the next day can compare against them.
+
+**The weekly review (Sundays 21:00)** contains: the portfolio change over the week; the week's analyses by rating and trades proposed; the opportunity ideas on trial; a **league table** of every strategy (this week and all time, best first); the strategy review (ready for a pilot, promising, switched off); open daily-strategy paper trades; and the scorecard headline.
 
 ## 8. Safety design
 
@@ -407,7 +431,9 @@ On Windows, `run-local.bat` runs the full app at `http://localhost:8000/`. It al
 | `app/policy.py` | Watchlist parsing, rating → proposal, hard limits, approval rules, and the account-rules text. Pure functions, fully tested. |
 | `app/engine.py` | Analysis, proposals, approval, execution, the queue, scheduled runs, pre-flight, overrides, the daily summary, the audit trail and one-off fixes. |
 | `app/etoro.py` prices | `rates()` takes bid/ask from eToro's v2 rates endpoint whenever it is newer than v1 (v1 was seen returning crypto prices hours old); v1 still supplies the currency conversion rates. |
-| `app/autotest.py` | Server-side auto-test of the Fast, Fast v2, Fast v3, Fast v2 + US hours and Swing entry strategies: $100 paper trades on every Entry now, closed at stop/target/break-even/time limit, checked every minute; R-multiples and best price per trade; digest for the daily email. |
+| `app/autotest.py` | Server-side auto-test of the Fast, Fast v2, Fast v3, Fast v2 + US hours and Swing entry strategies: $100 paper trades on every Entry now, closed at stop/target/break-even/time limit, checked every minute; R-multiples and best price per trade; the daily strategy review (switch off / flag ready); digest for the daily email. |
+| `app/dailytest.py` | Daily paper strategies: crypto 100-day trend (BTC, ETH, SOL), IBS and turn of the month on CSPX.L. |
+| `app/automation.py` | Trigger-based choice of symbols for scheduled analyses, the weekly Opportunities scan and idea expiry, the weekly review email. |
 | `app/strategy.py` | Day trader entry signals: fast (5-min trend, 1-min timing), fast v2 (plus quiet filter, 1-hour trend, spread-aware stops, home-market hours) and swing (1-hour trend, 15-min timing); ATR stops/targets and fee filter. |
 | `app/daytrader.py` | Day trader test page: eToro instrument search, live price sampling and 30-second candles. |
 | `app/terms.py` | Holding period per symbol; the short-term agent note; stop-loss and take-profit extraction and sanity checks. |
