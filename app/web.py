@@ -109,8 +109,7 @@ async def lifespan(_app):
     if config.SCHEDULER_ENABLED:
         schedule_jobs()
         sched.start()
-        if not autotest.last_review():                      # first start with the review: run it once now
-            threading.Thread(target=automation.daily_review, daemon=True).start()
+        threading.Thread(target=autotest.review, daemon=True).start()   # refresh the review on every start
     store.log("info", f"started ({config.ETORO_ENV.upper()} account{', DRY RUN' if config.DRY_RUN else ''}"
                       f"{'' if config.SCHEDULER_ENABLED else ', scheduler off'})")
     yield

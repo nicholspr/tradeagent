@@ -292,7 +292,7 @@ A first step towards intraday tools. Search for any eToro instrument by symbol o
     - Every daily check writes a line to the log, even when nothing is traded (each coin's close against its average; the fund's IBS and the weekdays left in the month), so you can see it ran.
     - **IBS** (Internal Bar Strength) on **CSPX.L** (iShares Core S&P 500 UCITS): at 16:20 UK on weekdays, near the London close, buys if the day closed in the bottom 20% of its range; sells on a close in the top 20%, a close above the previous day's high, or after 5 weekdays.
     - **Turn of month** on CSPX.L: buys near the close 4 weekdays before month end and sells near the close on the 3rd weekday of the new month (weekdays stand in for trading days; on a UK holiday nothing happens because there is no candle).
-  - **Daily strategy review** (added 15 Nov 2026, every evening at 21:20, and once straight after the update):
+  - **Daily strategy review** (added 15 Nov 2026, every evening at 21:20, and on every restart of the app):
     - a strategy/symbol pair with **20 or more** closed trades averaging worse than **−0.1R** is **switched off** automatically and listed as "Switched off by the daily review". Ticking it back on yourself stops the review switching it off again for **14 days**;
     - a pair with **40 or more** trades over at least **14 days**, a **profit factor above 1.3** and an average above **+0.15R** is flagged **"Ready for a small real-money pilot (your decision)"** on the card, in the daily summary and in the weekly review. Nothing goes live by itself: a pilot would be a separate change you ask for, with its own small limits;
     - pairs with 10 or more trades and a positive average are listed as "promising".
