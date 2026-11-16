@@ -578,6 +578,32 @@ def review(now: float | None = None) -> dict:
             ready.append(line)
         elif st["trades"] >= 10 and (st["avg_r"] or 0) > 0:
             watching.append(line)
+    # Whole strategy (16 Nov 2026): a strategy losing over 20+ trades in total is switched off on every symbol,
+    # even when no single symbol has 20 trades yet (Swing: 27 trades, -0.26R, spread over 8 symbols).
+    for key in INTRADAY:
+        allk = [t for (k, _), ts in by.items() if k == key for t in ts]
+        st = _pair_stats(allk)
+        if (st["avg_r"] is None or st["trades"] < RETIRE_MIN or st["avg_r"] >= RETIRE_R
+                or len({t["iid"] for t in allk}) < 2):            # one symbol: the pair rule above covers it
+            continue
+        switched = []
+        for iid, sy in syms.items():
+            if sy.get(f"{key}_on", 1) in (0, "0"):
+                continue
+            with store._lock, store.connect() as c:
+                ov = float(_meta_get(c, f"override:{key}:{iid}", "0") or 0)
+            if now - ov > OVERRIDE_DAYS * 86400:
+                set_enabled(iid, key, False, by_user=False)
+                switched.append(sy["symbol"])
+        if switched:
+            store.log("info", f"auto-test review: switched off {STRATEGIES[key]['short']} on every symbol "
+                              f"({st['trades']} trades in total, average {st['avg_r']:+.2f}R, net ${st['net']:+.2f})")
+        retired = [r for r in retired if r["strategy"] != key]
+        watching = [r for r in watching if r["strategy"] != key]
+        ready = [r for r in ready if r["strategy"] != key]
+        retired.append({"strategy": key, "iid": 0, "symbol": "every symbol", "trades": st["trades"],
+                        "avg_r": st["avg_r"], "net": st["net"], "pf": st["pf"], "days": st["days"],
+                        "new": bool(switched)})
     out = {"at": _now_iso(now), "retired": retired, "ready": ready, "promising": watching}
     with store._lock, store.connect() as c:
         c.execute("INSERT OR REPLACE INTO autotest_meta(key, value) VALUES ('review', ?)", (json.dumps(out),))

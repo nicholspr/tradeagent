@@ -1,6 +1,7 @@
 """Orchestration: analyse -> propose -> (signal | approve | auto-execute) -> notify."""
 import hashlib
 import re
+import time
 from html import escape
 import hmac
 import threading
@@ -486,7 +487,23 @@ def execute(pid: int) -> dict:
                         notify.both("Stop levels refused", f"TradeAgent: eToro refused the stop/take-profit for {p['ticker']}; "
                                     "the buy is being placed without them. Set them in the eToro app.", str(e))
                         r = ec.open_buy(inst["symbol"], inst["instrumentId"], sized.amount_usd)
-                    refs.append(str(r.get("orderId") or r.get("token") or r))
+                    ref = str(r.get("orderId") or r.get("token") or r)
+                    # 16 Nov 2026: eToro accepted an IUHC.L order, then rejected it ("by units only"), and the app
+                    # reported it executed. Now the order is checked; a units-only rejection is resent by units.
+                    err = _confirm(ec, ref)
+                    if err and UNITS_ONLY.search(err):
+                        units = _units_for(sized.amount_usd, inst)
+                        if not units:
+                            return _fail(pid, f"eToro needs this order in units, but {sized.amount_usd:.2f} USD buys "
+                                              f"less than the smallest size: {err}")
+                        audit(pid, f"eToro takes {p['ticker']} by units only; resending as {units:g} units")
+                        r = ec.open_buy(inst["symbol"], inst["instrumentId"], sized.amount_usd,
+                                        stop_loss=sl, take_profit=tp, units=units)
+                        ref = str(r.get("orderId") or r.get("token") or r)
+                        err = _confirm(ec, ref)
+                    if err:
+                        return _fail(pid, f"eToro rejected the order {ref}: {err}")
+                    refs.append(ref)
                 else:
                     for pos_id in sized.position_ids:
                         units = sized.units if sized.action == "partial_close" else None
@@ -513,6 +530,38 @@ def execute(pid: int) -> dict:
             notify.both(f"Executed: {desc}", f"TradeAgent [{env}] placed: {desc}. Order {','.join(refs)}",
                         f"Placed {desc} on your {env} eToro account.\nOrder refs: {refs}\nRating: {p['rating']}")
         return {"executed": True, "orders": refs}
+
+
+UNITS_ONLY = re.compile(r"BY_UNITS|by units", re.I)
+CONFIRM_WAITS = (2, 3, 5)        # seconds between status checks after placing an order
+
+
+def _confirm(ec, ref: str) -> str | None:
+    """Poll an open order briefly. The rejection message if eToro rejected it, else None (filled or still pending:
+    a pending order, e.g. waiting for the market, is left to eToro)."""
+    if not str(ref).isdigit():
+        return None
+    for wait in CONFIRM_WAITS:
+        time.sleep(wait)
+        try:
+            o = ec.order_status(int(ref))
+        except EtoroError:
+            continue
+        code = o.get("errorCode")
+        if code not in (None, 0, "0"):
+            return f"{o.get('errorMessage') or 'rejected'} (code {code})"
+        if o.get("positions") or o.get("positionExecutions") or o.get("units"):
+            return None                                     # filled
+    return None
+
+
+def _units_for(amount: float, inst: dict) -> float | None:
+    """Units worth about `amount` at the current price, rounded down to 4 decimals (None if no price)."""
+    price = _float(inst.get("ask")) or _float(inst.get("rate"))
+    if not price:
+        return None
+    u = int(amount / price * 10000) / 10000
+    return u if u > 0 else None
 
 
 def _live_stops(p: dict, inst: dict) -> tuple[float | None, float | None]:

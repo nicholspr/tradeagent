@@ -90,8 +90,7 @@ def _safe(fn, name: str):
     def run():
         try:
             done = fn()
-            if done:
-                store.log("info", f"auto-test daily {name}: {', '.join(done)}")
+            store.log("info", f"auto-test daily {name}: {', '.join(done) if done else 'no trades opened or closed'}")
         except Exception as e:  # noqa: BLE001
             store.log("error", f"auto-test daily {name} failed: {e}")
     return run

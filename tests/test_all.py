@@ -168,6 +168,7 @@ def eng(tmp_path, monkeypatch):
     CREDIT["v"] = 500.0
     fs = FakeSession()
     monkeypatch.setattr(engine, "client", lambda: etoro.EtoroClient("k", "u", env="real", base="https://x", session=fs))
+    monkeypatch.setattr(engine, "CONFIRM_WAITS", (0,))
     rating = {"v": "Buy"}
     monkeypatch.setattr(engine.analyst, "analyze", lambda t, a, p, rules="": (rating["v"], f"FINAL: {rating['v']}"))
     return engine, store, sent, fs, rating
@@ -2430,3 +2431,59 @@ def test_met_level_plus_hold_buys_half_size_with_stop_at_cancel_price(eng, monke
     rating["v"] = "Hold"
     assert engine.analyse(policy.parse_watchlist("META")[0])["rating"] == "Hold"
     assert engine.level_stop(met, rate) == round(rate * 0.92, 2) and engine.level_stop(met, rate * 0.5) is None
+
+
+
+def test_rejected_order_is_resent_by_units_or_marked_failed(eng, monkeypatch):
+    engine, store, sent, fs, rating = eng
+    from app import policy
+    store.set_setting("mode", "auto")
+    store.set_setting("watchlist", "META")
+    orig = fs.request
+    state = {"rejects": 1}
+
+    def req(method, url, params=None, json=None, headers=None, timeout=None):
+        if method == "GET" and "/trading/info/real/orders/" in url:
+            fs.calls.append((method, url, params, json, headers))
+            if state["rejects"] > 0:
+                state["rejects"] -= 1
+                return Resp(200, {"statusID": 4, "errorCode": 2021, "errorMessage": "Error - Order type validation "
+                                  "failure, requested order type: 17, allowed OrderType ORDER_FOR_EXECUTION_BY_UNITS (18)"})
+            return Resp(200, {"statusID": 2, "errorCode": 0, "units": 0.06})
+        return orig(method, url, params, json, headers, timeout)
+    monkeypatch.setattr(fs, "request", req)
+    rating["v"] = "Buy"
+    fs.calls.clear()
+    engine.analyse(policy.parse_watchlist("META")[0])
+    posts = [c[3] for c in fs.calls if c[0] == "POST"]
+    assert "amount" in posts[0] and "units" not in posts[0]
+    assert "units" in posts[1] and "amount" not in posts[1] and posts[1]["units"] > 0
+    p = store.proposals(None, 1)[0]
+    assert p["status"] == "executed"
+    # a rejection for another reason is reported as failed, not executed
+    state["rejects"] = 5
+    monkeypatch.setattr(engine, "UNITS_ONLY", __import__("re").compile("never-matches"))
+    store.set_setting("cooldown_days", "0")
+    engine.analyse(policy.parse_watchlist("META")[0])
+    p = store.proposals(None, 1)[0]
+    assert p["status"] == "failed" and "rejected" in p["error"]
+
+
+
+def test_review_switches_off_a_losing_strategy_everywhere(eng):
+    import time as _t
+    engine, store, sent, fs, rating = eng
+    from app import autotest
+    for iid, sym in ((15785, "SKHY.24-7"), (15200, "TSLA.24-7"), (560, "Semiconductors")):
+        autotest.add_symbol(iid, sym, "cfd")
+    now = _t.time()
+    with store._lock, store.connect() as c:
+        for i in range(24):                                   # 24 swing losers spread over 3 symbols (8 each)
+            iid, sym = ((15785, "SKHY.24-7"), (15200, "TSLA.24-7"), (560, "Semiconductors"))[i % 3]
+            c.execute("INSERT INTO autotrades(iid, symbol, kind, strategy, opened_ts, amt, entry, stop, target, status, "
+                      "closed_ts, exit, reason, gross, fees, net) VALUES (?,?,'cfd','swing',?,100,100,98,104,'closed',?,0,"
+                      "'x',-1,0,-1)", (iid, sym, now - 3600 * i - 60, now - 3600 * i))
+    rv = autotest.review(now)
+    assert [(r["strategy"], r["symbol"]) for r in rv["retired"]] == [("swing", "every symbol")]
+    assert all(s["swing_on"] == 0 for s in autotest.symbols() if s["symbol"] in ("SKHY.24-7", "TSLA.24-7", "Semiconductors"))
+    assert any("Swing on every symbol" in x for x in autotest.review_lines(rv))

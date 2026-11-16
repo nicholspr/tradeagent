@@ -93,7 +93,7 @@ def run_trend(ec=None, now: datetime | None = None) -> list[str]:
     now = now or datetime.now(timezone.utc)
     today = now.date().isoformat()
     rates = _rates(ec, [i for i, _ in TREND])
-    done = []
+    done, seen = [], []
     for iid, sym in TREND:
         try:
             bars = [b for b in ec.candles(iid, "OneDay", SMA_DAYS + 20) if not str(b["date"]).startswith(today)]
@@ -104,6 +104,7 @@ def run_trend(ec=None, now: datetime | None = None) -> list[str]:
                 continue
             t = autotest._open_trade(iid, "trend100")
             above = closes[-1] > avg
+            seen.append(f"{sym} {closes[-1]:.6g} {'above' if above else 'below'} {avg:.6g}")
             if above and not t:
                 _open("trend100", iid, sym, "crypto", r,
                       [f"Daily close {closes[-1]:.6g} is above the {SMA_DAYS}-day average {avg:.6g}"], stop=avg)
@@ -117,6 +118,7 @@ def run_trend(ec=None, now: datetime | None = None) -> list[str]:
                               (float(r["bid"]), time.time(), avg, t["id"]))
         except Exception as e:  # noqa: BLE001
             store.log("warn", f"auto-test trend100: {sym} check failed: {e}")
+    store.log("info", f"auto-test trend100 check: {'; '.join(seen) or 'no prices'} (daily close vs {SMA_DAYS}-day average)")
     return done
 
 
@@ -136,6 +138,8 @@ def run_fund(ec=None, now: datetime | None = None) -> list[str]:
     bid, done = float(r["bid"]), []
     today, prev = bars[-1], bars[-2] if len(bars) > 1 else None
     v = ibs(today)
+    store.log("info", f"auto-test daily fund check: {sym} IBS {v:.2f} (buy at {IBS_LOW:.2f} or below), "
+                      f"{weekdays_left(now.date())} weekdays left in the month")
     t = autotest._open_trade(iid, "ibs")
     if t:
         held = _weekdays(datetime.fromtimestamp(t["opened_ts"], timezone.utc).date(), now.date())

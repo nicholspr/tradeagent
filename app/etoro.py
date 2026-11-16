@@ -234,13 +234,17 @@ class EtoroClient:
 
     # ---- trading --------------------------------------------------------
     def open_buy(self, symbol: str, instrument_id: int, amount_usd: float,
-                 stop_loss: float | None = None, take_profit: float | None = None) -> dict:
+                 stop_loss: float | None = None, take_profit: float | None = None, units: float | None = None) -> dict:
         path = "/api/v2/trading/execution/demo/orders" if self.demo else "/api/v2/trading/execution/orders"
         # eToro rejects open orders that carry both symbol and instrumentId ("exactly one" must be given).
         # The id is unambiguous (eToro 'CVX' is a crypto token, Chevron is 'CVX.US'), so send only that.
+        # Size is exactly one of amount or units: some instruments (e.g. IUHC.L) accept units only.
         body = {"action": "open", "transaction": "buy", "instrumentId": int(instrument_id),
-                "orderType": "mkt", "leverage": 1, "amount": round(float(amount_usd), 2),
-                "orderCurrency": "usd"}
+                "orderType": "mkt", "leverage": 1}
+        if units:
+            body["units"] = float(units)
+        else:
+            body.update(amount=round(float(amount_usd), 2), orderCurrency="usd")
         if stop_loss:
             body["stopLossRate"] = round(float(stop_loss), 6)
         if take_profit:
