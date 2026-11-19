@@ -2,6 +2,7 @@
 import html
 import hmac
 import logging
+import os
 import threading
 from urllib.parse import urlparse, quote
 from contextlib import asynccontextmanager
@@ -804,7 +805,11 @@ def settings_page(s: dict | None = None, errors: dict | None = None, status: int
             + card("Watchlist", watchlist_editor(stored, msg, wl_error, wl_form or {}), "c12",
                    f"<span class=muted>{len(policy.parse_watchlist(stored['watchlist']))} symbols · only these are "
                    f"researched, and only these can be bought</span>")
-            + card("Limits and schedule", limits, "c8") + card("eToro connection", keys, "c4") + "</div>")
+            + card("Limits and schedule", limits, "c8") + card("eToro connection", keys, "c4")
+            + card("Backup", f"<p><a href='{B}/backup.sqlite3'><button type=button class=sec>Download database backup</button></a></p>"
+                   "<p class=muted>A snapshot of the app database (settings, runs, proposals, levels, snapshots, log). "
+                   "The eToro keys are removed from the copy. Safe to take while the app is running.</p>", "c4")
+            + "</div>")
     resp = page("Settings", body, active="Settings")
     resp.status_code = status
     return resp
@@ -1753,6 +1758,29 @@ def audit_csv():
         w.writerow([e["ts"], e["msg"]])
     return Response(buf.getvalue(), media_type="text/csv",
                     headers={"Content-Disposition": "attachment; filename=tradeagent-audit.csv"})
+
+
+@app.get("/backup.sqlite3")
+def backup_db():
+    """Download a consistent copy of the database with the secrets table emptied (keys never leave the server)."""
+    import sqlite3, tempfile
+    from fastapi.responses import FileResponse
+    from starlette.background import BackgroundTask
+    fd, tmp = tempfile.mkstemp(suffix=".sqlite3")
+    os.close(fd)
+    src, dst = store.connect(), sqlite3.connect(tmp)
+    try:
+        src.backup(dst)
+        dst.execute("DELETE FROM secrets")
+        dst.commit()
+        dst.execute("VACUUM")          # drop the deleted key pages from the file
+    finally:
+        src.close()
+        dst.close()
+    name = f"tradeagent-{datetime.now(timezone.utc).strftime('%Y-%m-%d-%H%M')}.sqlite3"
+    store.log("info", "Database backup downloaded (secrets removed)")
+    return FileResponse(tmp, media_type="application/vnd.sqlite3", filename=name,
+                        background=BackgroundTask(os.remove, tmp))
 
 
 def run_trade_actions(run_id: int, p: dict) -> str:

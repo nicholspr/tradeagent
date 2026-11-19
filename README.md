@@ -330,6 +330,7 @@ A first step towards intraday tools. Search for any eToro instrument by symbol o
 - **Agent runs:** each analysis with rating and duration, linking to its report.
 - **Log:** the last 40 events.
 - **Server (Docker) log:** routine polling (health checks and the day trader page's price, chart, search and auto-test refreshes) is left out when it succeeds, so the log keeps days of real events (startups, analyses, trades, auto-test opens and closes, errors) rather than minutes of price requests. Failed requests are still logged.
+- **Database backup** (Settings > Backup, `/backup.sqlite3`): download a copy of the SQLite database with the eToro keys removed.
 - **Full audit trail** (`/audit`) and **CSV export** (`/audit.csv`): every proposal event (created, blocked, approved and by whom, rejected, executed with the eToro order ID, failed, expired, cancelled, overridden), including the approver's IP address and whether they used the dashboard or an approval link.
 
 ### Settings
@@ -418,6 +419,7 @@ Removing an entry does not sell it; holdings stay until sold. London (`.L`) inst
 5. **Hostinger:** hPanel > VPS > Docker Manager > project `tradeagent`. Fill in the variables from `.env.example`, starting with `DRY_RUN=true`. The compose file builds straight from `github.com/nicholspr/tradeagent#main` (`pull_policy: build`). **Pushing to GitHub does not redeploy**; redeploy the project (or ask Claude to) and confirm in the logs, which show `started (REAL account[, DRY RUN])` and a `settings:` line on every start.
 6. Open `https://nichsoft.io/trader/`, check that the portfolio loads, set your limits, and run one analysis by hand.
 7. **Data:** settings, keys, runs, proposals, watch levels, snapshots and the log live in SQLite in the `tradeagent-data` Docker volume (`/data`). They survive redeploys. None of it is in GitHub.
+8. **Backup:** Settings > Backup > **Download database backup** (`/trader/backup.sqlite3`, behind the site login) gives a consistent copy of that database, safe to take while the app runs. The `secrets` table (eToro keys) is emptied in the copy, so no keys leave the server. Keep copies in `data-local-backup/` in your clone, which git ignores.
 
 **Deploys restart the app and interrupt a running analysis**, so deploy outside 09:05–09:15 and 15:05–15:20.
 

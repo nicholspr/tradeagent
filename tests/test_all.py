@@ -2487,3 +2487,28 @@ def test_review_switches_off_a_losing_strategy_everywhere(eng):
     assert [(r["strategy"], r["symbol"]) for r in rv["retired"]] == [("swing", "every symbol")]
     assert all(s["swing_on"] == 0 for s in autotest.symbols() if s["symbol"] in ("SKHY.24-7", "TSLA.24-7", "Semiconductors"))
     assert any("Swing on every symbol" in x for x in autotest.review_lines(rv))
+
+
+def test_backup_download_strips_secrets(eng, monkeypatch, tmp_path):
+    engine, store, sent, fs, rating = eng
+    import sqlite3
+    from fastapi.testclient import TestClient
+    from app import web
+    importlib.reload(web)
+    monkeypatch.setattr(web.sched, "start", lambda: None)
+    store.set_secret("etoro_api_key", "PUBKEY-DO-NOT-LEAK")
+    store.set_secret("etoro_user_key", "PRIVKEY-DO-NOT-LEAK")
+    store.set_setting("max_trade_usd", "75")
+    with TestClient(web.app) as c:
+        assert "Download database backup" in c.get("/settings").text
+        r = c.get("/backup.sqlite3")
+        assert r.status_code == 200
+        assert "attachment" in r.headers["content-disposition"] and ".sqlite3" in r.headers["content-disposition"]
+    assert b"DO-NOT-LEAK" not in r.content
+    f = tmp_path / "copy.sqlite3"
+    f.write_bytes(r.content)
+    db = sqlite3.connect(f)
+    assert db.execute("SELECT COUNT(*) FROM secrets").fetchone()[0] == 0
+    assert db.execute("SELECT value FROM settings WHERE key='max_trade_usd'").fetchone()[0] == "75"
+    db.close()
+    assert store.get_secret("etoro_api_key") == "PUBKEY-DO-NOT-LEAK"     # live DB untouched
